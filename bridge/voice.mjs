@@ -47,7 +47,7 @@ const VOICE_NOTE =
   'This turn came by voice and your reply is read aloud. Answer in one or two short spoken sentences. ' +
   'No markdown, no bullets, no emoji, no URLs, no file paths. If the answer needs a list, a link or more than a few sentences, ' +
   'post it to his Slack DM with the Slack tools and say aloud that you did. If a task will take a while, do it, then say the result in one sentence. ' +
-  'Still finish with the [status: ...] line; it is stripped before speaking.';
+  'Finish with the [status: ...] line using only done, partial, blocked or question; it is stripped before speaking.';
 
 async function loadEnv(path) {
   const out = {};
@@ -92,6 +92,7 @@ function sameToken(a, b) {
 export function speakable(text) {
   const { text: body } = splitOutcome(text);
   return body
+    .replace(/\[\s*status\s*:[^\]]*\]?/gi, '')
     .replace(/https?:\/\/\S+/g, '')
     .replace(/<[^>|]+\|([^>]+)>/g, '$1')
     .replace(/[*_`~>#]/g, '')
@@ -244,7 +245,9 @@ const PAGE = `<!doctype html>
   const orb = document.getElementById('orb'), stateEl = document.getElementById('state'), said = document.getElementById('said');
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) { stateEl.textContent = 'This browser has no speech input. Use Safari.'; return; }
-  let on = false, mode = 'off', rec = null, wake = null, ctl = null;
+  let on = false, mode = 'off', rec = null, wake = null, ctl = null, lastSpoken = '';
+  const norm = t => t.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/ +/g, ' ').trim();
+  const isEcho = h => { const a = norm(h), b = norm(lastSpoken); return a.length > 0 && b.length > 0 && (b.includes(a) || a.includes(b) || b.split(' ').filter(w => a.split(' ').includes(w)).length / a.split(' ').length > .7); };
   const set = (m, label) => { mode = m; orb.className = m; stateEl.textContent = label; };
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -262,7 +265,7 @@ const PAGE = `<!doctype html>
     rec.onend = () => {
       const heard = (final || said.textContent).trim();
       if (!on) return;
-      if (heard.length > 1) send(heard); else listen();
+      if (heard.length > 1 && !isEcho(heard)) send(heard); else { said.textContent = ''; listen(); }
     };
     set('listening', 'Listening');
     try { rec.start(); } catch { setTimeout(listen, 400); }
@@ -279,6 +282,7 @@ const PAGE = `<!doctype html>
       if (!on) return;
       said.textContent = j.text;
       await speak(j.text);
+      await sleep(900);
     } catch (e) {
       if (e.name !== 'AbortError' && on) { said.textContent = 'Lost the connection.'; await speak('I lost the connection.'); }
     }
@@ -288,6 +292,7 @@ const PAGE = `<!doctype html>
   function speak(text, quick) {
     return new Promise(res => {
       speechSynthesis.cancel();
+      if (!quick) lastSpoken = text;
       const u = new SpeechSynthesisUtterance(text);
       const v = speechSynthesis.getVoices().filter(v => v.lang.startsWith('en')).find(v => /samantha|ava|allison|karen|serena/i.test(v.name));
       if (v) u.voice = v;
