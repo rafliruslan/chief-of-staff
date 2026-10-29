@@ -38,7 +38,9 @@ const MCP_CONFIG = process.env.AGENT_MCP_CONFIG || join(CONFIG_DIR, 'mcp.json');
 const STATE_PATH = join(process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), 'agentic-browser', 'voice.json');
 const MAX_BODY = 8 * 1024;
 /** `tailscale serve` stamps this header with who is calling, so the owner's own devices need no token. */
-const ALLOWED_LOGIN = process.env.VOICE_ALLOWED_LOGIN || 'dtsx84d5fr@privaterelay.appleid.com';
+const ALLOWED_LOGIN = process.env.VOICE_ALLOWED_LOGIN || '';
+/** Hosts the page may be reached by. A rebinding page on another name is refused. */
+const ALLOWED_HOSTS = new Set((process.env.VOICE_ALLOWED_HOSTS || `127.0.0.1:${PORT}`).split(',').map((h) => h.trim()).filter(Boolean));
 
 /** Added to every spoken turn: the reply is read aloud, so it must sound like speech. */
 const VOICE_NOTE =
@@ -143,6 +145,11 @@ async function main() {
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
+    const origin = req.headers.origin;
+    if (!ALLOWED_HOSTS.has(String(req.headers.host || '')) || (origin && new URL(origin).host !== req.headers.host)) {
+      res.writeHead(403);
+      return res.end();
+    }
     if (req.method === 'GET' && url.pathname === '/') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(PAGE);
