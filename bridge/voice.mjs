@@ -145,8 +145,14 @@ async function main() {
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
-    const origin = req.headers.origin;
-    if (!ALLOWED_HOSTS.has(String(req.headers.host || '')) || (origin && new URL(origin).host !== req.headers.host)) {
+    // An unparseable Origin is refused, not thrown on: one bad header must not take the server down.
+    let originHost = null;
+    try {
+      if (req.headers.origin) originHost = new URL(req.headers.origin).host;
+    } catch {
+      originHost = '';
+    }
+    if (!ALLOWED_HOSTS.has(String(req.headers.host || '')) || (originHost !== null && originHost !== req.headers.host)) {
       res.writeHead(403);
       return res.end();
     }
