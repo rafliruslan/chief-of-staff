@@ -110,7 +110,7 @@ function runWaiter(platform, { pid = '100', busy = 0, checks = null, comesBack =
     stub('launchctl', [
       'case "$1" in',
       '  print) p=$(cat "$S/pid"); [ -n "$p" ] && printf "\\tpid = %s\\n\\tstate = running\\n" "$p"; exit 0;;',
-      `  kickstart) ${bump};;`,
+      `  kill) ${bump};;`,
       'esac',
     ].join('\n'));
     stub('systemctl', [
@@ -140,8 +140,8 @@ function runWaiter(platform, { pid = '100', busy = 0, checks = null, comesBack =
 
 test('macOS: an idle bridge is restarted once, then the job unloads itself', () => {
   const { calls, log, plistLeft } = runWaiter('darwin');
-  assert.equal(calls.filter((c) => c.startsWith('launchctl kickstart')).length, 1);
-  assert.ok(calls.includes('launchctl kickstart -k gui/501/com.example.bridge'));
+  assert.equal(calls.filter((c) => c.startsWith('launchctl kill')).length, 1);
+  assert.ok(calls.includes('launchctl kill SIGHUP gui/501/com.example.bridge'));
   assert.equal(calls.at(-1), 'launchctl bootout gui/501/com.example.bridge.restart-self', 'unloads itself last');
   assert.match(log, /com\.example\.bridge: restarted, pid 100 -> 101/);
   assert.equal(plistLeft, false, 'the plist is removed');
@@ -149,7 +149,7 @@ test('macOS: an idle bridge is restarted once, then the job unloads itself', () 
 
 test('a busy bridge is restarted only after its runs end', () => {
   const { calls, log } = runWaiter('darwin', { busy: 2 });
-  const kick = calls.findIndex((c) => c.startsWith('launchctl kickstart'));
+  const kick = calls.findIndex((c) => c.startsWith('launchctl kill'));
   const lastBusy = calls.map((c, i) => (c.startsWith('pgrep') ? i : -1)).filter((i) => i >= 0);
   assert.equal(lastBusy.length, 4, 'two busy checks, then two idle');
   assert.ok(kick > lastBusy.at(-1), 'restart comes after the idle checks');
@@ -163,12 +163,12 @@ test('a run that ends while the bridge is still posting does not trigger the res
   const { calls } = runWaiter('darwin', { checks: [1, 0, 1, 0, 0] });
   const pg = calls.filter((c) => c.startsWith('pgrep')).length;
   assert.equal(pg, 5, 'one idle check is not enough');
-  assert.equal(calls.filter((c) => c.startsWith('launchctl kickstart')).length, 1);
+  assert.equal(calls.filter((c) => c.startsWith('launchctl kill')).length, 1);
 });
 
 test('a bridge busy past the limit is restarted anyway, and says so', () => {
   const { calls, log } = runWaiter('darwin', { busy: 99, maxWait: 2 });
-  assert.equal(calls.filter((c) => c.startsWith('launchctl kickstart')).length, 1);
+  assert.equal(calls.filter((c) => c.startsWith('launchctl kill')).length, 1);
   assert.match(log, /still busy after 2s, restarting anyway/);
 });
 

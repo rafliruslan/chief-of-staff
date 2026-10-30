@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDrain } from './drain.mjs';
+import { createDrain, termDrainMs, DRAIN_MAX_MS } from './drain.mjs';
 
 const quiet = { log() {}, warn() {} };
 
@@ -35,10 +35,26 @@ test('a busy bridge waits until its runs finish', async () => {
 test('the wait is capped', async () => {
   const c = clock();
   const warned = [];
-  const d = createDrain({ busy: () => 1, maxMs: 60_000, ...c, log: { log() {}, warn: (s) => warned.push(s) } });
-  assert.equal(await d.start('SIGTERM'), false);
-  assert.equal(c.now(), 60_000);
-  assert.match(warned[0], /1 run\(s\) still going after 1 min; exiting anyway/);
+  const d = createDrain({ busy: () => 1, ...c, log: { log() {}, warn: (s) => warned.push(s) } });
+  assert.equal(await d.start('SIGTERM', { maxMs: 50_000 }), false);
+  assert.equal(c.now(), 50_000);
+  assert.match(warned[0], /1 run\(s\) still going after 50s; exiting anyway/);
+});
+
+test('SIGTERM during a long drain brings the end closer, never further', async () => {
+  const c = clock();
+  const d = createDrain({ busy: () => 1, ...c, log: quiet });
+  const wait = d.start('SIGHUP');
+  d.start('SIGTERM', { maxMs: 50_000 });
+  d.start('SIGHUP');
+  assert.equal(await wait, false);
+  // The first poll has already slept when SIGTERM lands: 1s in, then 50s.
+  assert.equal(c.now(), 51_000);
+});
+
+test('SIGTERM waits less on macOS, where launchd kills after 60s', () => {
+  assert.ok(termDrainMs('darwin') < 60_000);
+  assert.equal(termDrainMs('linux'), DRAIN_MAX_MS);
 });
 
 test('a second signal shares the first wait', async () => {

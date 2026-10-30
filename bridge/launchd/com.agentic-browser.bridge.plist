@@ -59,11 +59,13 @@
     <key>ThrottleInterval</key>
     <integer>30</integer>
     <!--
-      On a restart the bridge finishes its runs before exiting, for up to 20
-      minutes (drain.mjs). launchd's default is to SIGKILL it after 20 seconds.
+      On SIGTERM the bridge finishes its runs before exiting (drain.mjs), and
+      launchd kills it after this many seconds. 60 is the most launchd allows a
+      user agent; a larger value is cut to 60. To restart without that limit,
+      send SIGHUP: launchctl kill SIGHUP gui/$(id -u)/com.agentic-browser.bridge
     -->
     <key>ExitTimeOut</key>
-    <integer>1320</integer>
+    <integer>60</integer>
     <key>StandardOutPath</key>
     <string>/Users/USERNAME/Library/Logs/agentic-browser.stdout.log</string>
     <key>StandardErrorPath</key>

@@ -39,7 +39,7 @@ import { createRelayClient, createLinearHandler, startPoller, runPolicy } from '
 import { watchOwnBinary } from './binary-watch.mjs';
 import { watchSocket } from './socket-watch.mjs';
 import { createCatchup, createSeen, lateNote, LOOKBACK_MS, STARTUP_MS } from './catchup.mjs';
-import { createDrain } from './drain.mjs';
+import { createDrain, termDrainMs } from './drain.mjs';
 
 const { App } = bolt;
 
@@ -816,13 +816,15 @@ async function main() {
     process.exit(1);
   }
   if (lock.tookOver) console.log('[agent] took over a stale lock from a dead process');
-  // Every restart arrives as SIGTERM. Finish what is running first, then go;
-  // see drain.mjs. Ctrl-C in a terminal has already reached the runs too, as
-  // they share its process group, so there is nothing left to wait for.
-  const exitAfterDrain = (code, reason) => {
-    drain.start(reason).finally(() => release().finally(() => process.exit(code)));
+  // Finish what is running first, then go; see drain.mjs for how long each
+  // signal may wait. SIGHUP is the restart: exit, and launchd starts the next.
+  // Ctrl-C in a terminal has already reached the runs too, as they share its
+  // process group, so there is nothing left to wait for.
+  const exitAfterDrain = (code, reason, opts) => {
+    drain.start(reason, opts).finally(() => release().finally(() => process.exit(code)));
   };
-  process.on('SIGTERM', () => exitAfterDrain(0, 'SIGTERM'));
+  process.on('SIGHUP', () => exitAfterDrain(0, 'SIGHUP'));
+  process.on('SIGTERM', () => exitAfterDrain(0, 'SIGTERM', { maxMs: termDrainMs() }));
   process.on('SIGINT', () => { release().finally(() => process.exit(0)); });
 
   await app.start();

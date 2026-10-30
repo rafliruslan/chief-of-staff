@@ -26,6 +26,10 @@
  * and new pid. If the bridge stays busy for MAX_WAIT_S it restarts anyway; the
  * bridge then finishes its runs before it exits (drain.mjs).
  *
+ * On macOS the restart is SIGHUP, not `kickstart -k`: kickstart sends SIGTERM
+ * and launchd kills the bridge 60 seconds later whatever it is doing, while
+ * SIGHUP lets it finish and exit, and KeepAlive starts the next one.
+ *
  *   node restart-self.mjs                     # the bridge this run belongs to
  *   node restart-self.mjs --service <label>   # another one, e.g. com.agentic-browser.tara
  */
@@ -38,7 +42,8 @@ import { fileURLToPath } from 'node:url';
 export const DELAY_S = 40;
 export const CHECK_S = 10;
 export const MAX_WAIT_S = 30 * 60;
-export const COME_BACK_S = 60;
+// Long enough for a bridge to drain (drain.mjs) and be started again.
+export const COME_BACK_S = 22 * 60;
 
 const defaultRun = (cmd, args) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
@@ -134,7 +139,7 @@ export function waiterScript({
       ? [
           `DOMAIN=gui/${uid}`,
           `pid() { launchctl print "$DOMAIN/$SERVICE" 2>/dev/null | awk '$1=="pid"{print $3; exit}'; }`,
-          `restart() { launchctl kickstart -k "$DOMAIN/$SERVICE"; }`,
+          `restart() { launchctl kill SIGHUP "$DOMAIN/$SERVICE"; }`,
           // Last, because unloading this job ends this script.
           `finish() { rm -f ${sq(plistPath)}; launchctl bootout "$DOMAIN/"${sq(jobName(service, platform))}; }`,
         ]
