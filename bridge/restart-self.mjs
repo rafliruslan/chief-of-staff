@@ -24,7 +24,7 @@
  * bridge has had no child process (no run in flight) for two checks in a row,
  * restart it, and log the old
  * and new pid. If the bridge stays busy for MAX_WAIT_S it restarts anyway; the
- * bridge reports a run cut off by a restart in its own thread.
+ * bridge then finishes its runs before it exits (drain.mjs).
  *
  *   node restart-self.mjs                     # the bridge this run belongs to
  *   node restart-self.mjs --service <label>   # another one, e.g. com.agentic-browser.tara

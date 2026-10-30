@@ -109,9 +109,9 @@ export async function findMissed({ client, botUserId, since, until, threadMs = T
 }
 
 /** Told to the agent alongside a late mention, so it does not answer as if live. */
-export function lateNote(ts) {
+export function lateNote(ts, why = 'after the connection dropped') {
   const at = new Date(tsMs(ts)).toISOString().replace(/\.\d+Z$/, 'Z');
-  return `This message was sent at ${at} UTC and reached you late, after the connection dropped. Read the thread for anything that changed since.`;
+  return `This message was sent at ${at} UTC and reached you late, ${why}. Read the thread for anything that changed since.`;
 }
 
 /**

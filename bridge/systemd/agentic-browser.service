@@ -29,6 +29,11 @@ Environment=AGENT_PERSONA_PATH=%h/.config/agentic-browser/persona.md
 # EnvironmentFile=%h/.config/agentic-browser/secrets
 Restart=on-failure
 RestartSec=5
+# On a restart the bridge finishes its runs before exiting, for up to 20
+# minutes (drain.mjs). mixed sends SIGTERM to the bridge alone, so the runs it
+# is waiting for are not stopped under it; the default signals them all.
+KillMode=mixed
+TimeoutStopSec=22min
 
 [Install]
 WantedBy=default.target

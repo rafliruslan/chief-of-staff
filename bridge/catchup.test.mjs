@@ -140,5 +140,6 @@ test('a reconnect with nothing missed logs nothing', async () => {
 });
 
 test('the late note gives the send time in UTC', () => {
-  assert.match(lateNote('1793005169.599299'), /sent at 2026-10-26T08:59:29Z UTC and reached you late/);
+  assert.match(lateNote('1793005169.599299'), /sent at 2026-10-26T08:59:29Z UTC and reached you late, after the connection dropped\./);
+  assert.match(lateNote('1793005169.599299', 'while the bridge restarted'), /reached you late, while the bridge restarted\./);
 });

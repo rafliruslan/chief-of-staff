@@ -39,6 +39,7 @@ import { createRelayClient, createLinearHandler, startPoller, runPolicy } from '
 import { watchOwnBinary } from './binary-watch.mjs';
 import { watchSocket } from './socket-watch.mjs';
 import { createCatchup, createSeen, lateNote, LOOKBACK_MS, STARTUP_MS } from './catchup.mjs';
+import { createDrain } from './drain.mjs';
 
 const { App } = bolt;
 
@@ -290,7 +291,14 @@ async function main() {
 
   const sessions = createSessionStore({ path: DEFAULT_STATE_PATH });
   const pendingStore = createPendingStore({ path: DEFAULT_PENDING_PATH });
+  // Requests that arrived while this process was finishing up to restart,
+  // kept for the next one. Same shape as pending, different meaning: these
+  // never started. See drain.mjs.
+  const deferred = createPendingStore({ path: join(dirname(DEFAULT_PENDING_PATH), 'deferred.json') });
   const queue = createQueue({ concurrency });
+  // Set once the Linear poller exists; stopping it leaves new events in the relay.
+  let stopLinear = () => {};
+  const drain = createDrain({ busy: () => queue.pending, onStart: () => stopLinear(), log: console });
 
   const auth = await app.client.auth.test({ token: SLACK_BOT_TOKEN });
   const botUserId = auth.user_id;
@@ -451,6 +459,14 @@ async function main() {
       return;
     }
 
+    // Restarting: the runs in flight finish, this one waits for the next
+    // process. Kept rather than dropped, because a DM is never caught up.
+    if (drain.draining) {
+      await deferred.add(event.channel, event.ts, { event, text });
+      console.log(`[agent] restarting; kept ${event.ts} for after`);
+      return;
+    }
+
     const channel = event.channel;
     const threadTs = event.thread_ts || event.ts;
     // A flat DM is filed under the DM and answered with no thread. See isFlatDm.
@@ -541,7 +557,7 @@ async function main() {
         const task = composeTask(prompt, threadContext);
         // Who she is browsing as, before what she is being asked. An empty
         // string when unknown, so nothing is claimed that is not known.
-        const note = [roleNote(role, event.user), identityNote(IDENTITY), (flat ? dmLocationNote({ channel }) : locationNote({ channel, threadTs })), late ? lateNote(event.ts) : '', rotated ? ROTATED_NOTE : '', REPLY_NOTE]
+        const note = [roleNote(role, event.user), identityNote(IDENTITY), (flat ? dmLocationNote({ channel }) : locationNote({ channel, threadTs })), late ? lateNote(event.ts, late === true ? undefined : late) : '', rotated ? ROTATED_NOTE : '', REPLY_NOTE]
           .filter(Boolean)
           .join('\n\n');
         // Persona on a thread's first turn only. After that it lives in the
@@ -800,9 +816,14 @@ async function main() {
     process.exit(1);
   }
   if (lock.tookOver) console.log('[agent] took over a stale lock from a dead process');
-  for (const sig of ['SIGINT', 'SIGTERM']) {
-    process.on(sig, () => { release().finally(() => process.exit(0)); });
-  }
+  // Every restart arrives as SIGTERM. Finish what is running first, then go;
+  // see drain.mjs. Ctrl-C in a terminal has already reached the runs too, as
+  // they share its process group, so there is nothing left to wait for.
+  const exitAfterDrain = (code, reason) => {
+    drain.start(reason).finally(() => release().finally(() => process.exit(code)));
+  };
+  process.on('SIGTERM', () => exitAfterDrain(0, 'SIGTERM'));
+  process.on('SIGINT', () => { release().finally(() => process.exit(0)); });
 
   await app.start();
   console.log(`[agent] connected as ${auth.user} (${botUserId}) in ${auth.team}`);
@@ -829,12 +850,20 @@ async function main() {
     },
     log: console,
   });
+  // Before the startup catch-up, and claimed, so it does not answer them too.
+  const kept = (await deferred.takeAll()).sort((a, b) => a.startedAt - b.startedAt);
+  if (kept.length) console.log(`[agent] ${kept.length} request(s) kept across the restart; answering them now`);
+  for (const k of kept) {
+    seen.claim(k.channel, k.ts);
+    handleTurn({ event: k.event, client: app.client, text: k.text, late: 'while the bridge restarted' })
+      .catch((err) => console.error(`[agent] kept request ${k.ts} failed:`, err));
+  }
   catchUp(Date.now() - STARTUP_MS, 'startup');
 
   // When brew deletes the node binary this process started on, exit so
-  // launchd restarts it on the current one. Releases the lock first, the same
-  // as a signal does. See binary-watch.mjs.
-  watchOwnBinary({ log: console, exit: (code) => { release().finally(() => process.exit(code)); } });
+  // launchd restarts it on the current one. Finishes the runs in flight and
+  // releases the lock first, the same as SIGTERM. See binary-watch.mjs.
+  watchOwnBinary({ log: console, exit: (code) => exitAfterDrain(code, 'node binary gone') });
 
   // When the Slack socket goes down and does not come back, exit the same way,
   // so launchd starts a bridge with a fresh one. See socket-watch.mjs.
@@ -842,7 +871,7 @@ async function main() {
     client: app.receiver.client,
     busy: () => runs.size() > 0,
     log: console,
-    exit: (code) => { release().finally(() => process.exit(code)); },
+    exit: (code) => exitAfterDrain(code, 'socket down'),
     onReconnect: (downSince) => catchUp(downSince - LOOKBACK_MS, 'reconnect'),
   });
 
@@ -860,7 +889,7 @@ async function main() {
       // have its answer swallowed.
       stopTurn: (key) => runs.isRunning(key) && runs.stop(key),
     });
-    startPoller({ pull: () => relay.pull(LINEAR_AGENT), handle });
+    stopLinear = startPoller({ pull: () => relay.pull(LINEAR_AGENT), handle }).stop;
     console.log(`[linear] polling ${LINEAR_RELAY_URL} as ${LINEAR_AGENT}`);
   }
 }

@@ -58,6 +58,12 @@
     -->
     <key>ThrottleInterval</key>
     <integer>30</integer>
+    <!--
+      On a restart the bridge finishes its runs before exiting, for up to 20
+      minutes (drain.mjs). launchd's default is to SIGKILL it after 20 seconds.
+    -->
+    <key>ExitTimeOut</key>
+    <integer>1320</integer>
     <key>StandardOutPath</key>
     <string>/Users/USERNAME/Library/Logs/agentic-browser.stdout.log</string>
     <key>StandardErrorPath</key>
