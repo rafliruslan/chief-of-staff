@@ -36,6 +36,7 @@ import { runAgent } from './runner.mjs';
 import { transcriptPathFor } from './mirror.mjs';
 import { allowedTools, deniedBrowserTools } from './browser.mjs';
 import { healBrowser } from './browser-health.mjs';
+import { checkGate, parseDown, stripDown, trackHealth } from './routine-health.mjs';
 
 const WORKSPACE =
   process.env.AGENT_WORKSPACE || join(homedir(), '.local', 'share', 'agentic-browser', 'workspace');
@@ -45,6 +46,28 @@ const STATE =
   join(homedir(), '.local', 'state', 'agentic-browser', 'routines.json');
 const MCP_CONFIG =
   process.env.AGENT_MCP_CONFIG || join(homedir(), '.config', 'agentic-browser', 'mcp.json');
+const ENV_PATH = process.env.AGENT_ENV_PATH || join(homedir(), '.config', 'agentic-browser', 'env');
+
+/**
+ * DM the operator (ALLOWED_USER) as the bot, from the runner itself. Not
+ * through the model's Slack tools: a run that lost those is one of the things
+ * this reports. The token is read here and goes only to slack.com.
+ */
+async function alertOperator(text) {
+  try {
+    const { parseEnv } = await import('./slack-tools.mjs');
+    const env = parseEnv(await readFile(ENV_PATH, 'utf8'));
+    if (!env.SLACK_BOT_TOKEN || !env.ALLOWED_USER) {
+      console.warn('[routines] alert not sent: SLACK_BOT_TOKEN or ALLOWED_USER missing');
+      return;
+    }
+    const { default: bolt } = await import('@slack/bolt');
+    await new bolt.webApi.WebClient(env.SLACK_BOT_TOKEN).chat.postMessage({ channel: env.ALLOWED_USER, text });
+    console.log(`[routines] alerted: ${text}`);
+  } catch (err) {
+    console.warn(`[routines] alert not sent (${err.message}): ${text}`);
+  }
+}
 
 /**
  * Narrower than the bridge on purpose: no WebFetch, no WebSearch. An unattended
@@ -278,6 +301,12 @@ function buildPrompt(name, body, meta) {
     '   your report so it can be fixed.',
     '3. If nothing happened, say so plainly. A quiet run is the normal case and',
     '   inventing significance is worse than reporting nothing.',
+    '4. If a source this file told you to read could not be read (signed out, a',
+    '   tool missing, a timeout, a page that would not load), end the report with',
+    '   one line, `[down: <source>, <source>]`, using short names that stay the',
+    '   same from run to run, such as `gmail u/2` or `slack`. The runner counts',
+    '   these and tells Rafli when one stays down. Leave the line out when every',
+    '   source was read, or when the file says to skip reading this run.',
     '',
     'Reply with the report only, in a few short lines.',
     '',
@@ -321,6 +350,14 @@ async function main() {
       if (!due) {
         if (reason !== 'not due') console.log(`[routines] ${name}: ${reason}`);
         continue;
+      }
+      // A routine watching a list that is empty need not start a model to find
+      // that out. See routine-health.mjs. Not logged when closed: it is the
+      // normal case, ninety times a day.
+      if (meta.gate) {
+        const gate = await checkGate(meta.gate, (f) => readFile(join(ROUTINES, basename(f)), 'utf8'));
+        if (!gate.open) continue;
+        if (gate.reason.includes('anyway')) console.warn(`[routines] ${name}: ${gate.reason}`);
       }
       // A timer that fires late must not run a routine late. Skip, do not catch up.
       const key = fireKey(now);
@@ -368,15 +405,24 @@ async function main() {
     });
 
     ran += 1;
+    const { health, alerts } = trackHealth(
+      state[name]?.health,
+      { name, ok: result.ok, down: result.ok ? parseDown(result.text) : [], now, error: result.text },
+      meta.alert_after,
+    );
     state[name] = {
       ...state[name],
       lastRun: now.toISOString(),
       ok: result.ok,
       cost: result.costUsd,
       sessionId,
+      health,
     };
     console.log(`[routines] ${name}: ${result.ok ? 'ok' : 'FAILED'}`);
-    console.log(result.text.split('\n').slice(0, 12).join('\n'));
+    console.log(stripDown(result.text).split('\n').slice(0, 12).join('\n'));
+    const down = Object.keys(health.sources);
+    if (down.length) console.log(`[routines] ${name}: down ${down.map((s) => `${s} x${health.sources[s].runs}`).join(', ')}`);
+    if (!forced) for (const a of alerts) await alertOperator(a);
   }
 
   if (!dry) await saveState(state);
