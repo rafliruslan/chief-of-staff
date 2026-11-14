@@ -104,7 +104,8 @@ export function speakable(text) {
 async function main() {
   const env = await loadEnv(ENV_PATH);
   const token = await loadToken();
-  const dm = process.env.VOICE_DM_CHANNEL || 'D0BNNKNHQDT';
+  // A user id as the channel opens the bot's DM with that person, so no DM id is kept here.
+  const dm = process.env.VOICE_DM_CHANNEL || env.VOICE_DM_CHANNEL || env.ALLOWED_USER;
   const slack = env.SLACK_BOT_TOKEN ? new WebClient(env.SLACK_BOT_TOKEN) : null;
   const tools = await allowedTools(MCP_CONFIG);
   const denied = await deniedBrowserTools(MCP_CONFIG);
