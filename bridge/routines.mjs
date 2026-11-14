@@ -36,7 +36,7 @@ import { runAgent } from './runner.mjs';
 import { transcriptPathFor } from './mirror.mjs';
 import { allowedTools, deniedBrowserTools } from './browser.mjs';
 import { healBrowser } from './browser-health.mjs';
-import { checkGate, parseDown, stripDown, trackHealth } from './routine-health.mjs';
+import { checkGate, parseDown, stripDown, trackHealth, parseLog, logLine, appendLog } from './routine-health.mjs';
 
 const WORKSPACE =
   process.env.AGENT_WORKSPACE || join(homedir(), '.local', 'share', 'agentic-browser', 'workspace');
@@ -292,8 +292,12 @@ function buildPrompt(name, body, meta) {
     '',
     'When you are done:',
     '',
-    `1. Append ONE line to the Log section of memory/routines/${name}.md:`,
-    '   the date, the outcome, nothing else. Not a paragraph.',
+    '1. Do not edit the Log section yourself. If this file\'s own rules call for a',
+    '   log line on a run like this one, end your report with one line,',
+    '   `[log: <the outcome, one short sentence>]`, and the runner adds it with the',
+    '   date and time. If the file says this run logs nothing (a quiet run, a line',
+    '   already there for today), leave the `[log:]` line out. The file decides.',
+    '   Trimming old lines is the runner\'s job too (`log_keep` in the frontmatter).',
     '2. If you discovered something new about how the site behaves, put it in the',
     `   "What breaks" section of memory/routines/${name}.md, and let the log line`,
     '   just say a new failure mode was recorded. Site notes, skills and the other',
@@ -420,6 +424,15 @@ async function main() {
     };
     console.log(`[routines] ${name}: ${result.ok ? 'ok' : 'FAILED'}`);
     console.log(stripDown(result.text).split('\n').slice(0, 12).join('\n'));
+    const logged = result.ok ? parseLog(result.text) : null;
+    if (logged) {
+      try {
+        const path = join(ROUTINES, file);
+        await writeFile(path, appendLog(await readFile(path, 'utf8'), logLine(logged, now), meta.log_keep));
+      } catch (err) {
+        console.warn(`[routines] ${name}: log line not written (${err.message}): ${logged}`);
+      }
+    }
     const down = Object.keys(health.sources);
     if (down.length) console.log(`[routines] ${name}: down ${down.map((s) => `${s} x${health.sources[s].runs}`).join(', ')}`);
     if (!forced) for (const a of alerts) await alertOperator(a);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseGate, sectionItems, checkGate, parseDown, stripDown, trackHealth } from './routine-health.mjs';
+import { parseGate, sectionItems, checkGate, parseDown, stripDown, trackHealth, parseLog, logLine, appendLog } from './routine-health.mjs';
 
 const HOT = (body) => `# Check\n\n## Hot list\n\nFormat: \`<key> | <window> | <what>\`. Empty means stop.\n\n${body}\n\n**Write-up structure:**\n- a | b | c\n\n## Log\n`;
 
@@ -82,4 +82,35 @@ test('failed runs alert on the third and leave source counts alone', () => {
 test('alert_after from frontmatter is honoured', () => {
   const r = trackHealth(undefined, { name: 'r', ok: true, down: ['x'], now: 0 }, '1');
   assert.equal(r.alerts.length, 1);
+});
+
+test('the log line comes from the last [log: ...] line, and none means none', () => {
+  assert.equal(parseLog('Quiet.\n[log: IDLE, Hot list empty]\n[down: slack]'), 'IDLE, Hot list empty');
+  assert.equal(parseLog('Quiet.'), null);
+  assert.equal(parseLog('[log: none]'), null);
+  assert.equal(stripDown('Quiet.\n[log: IDLE]\n[down: slack]'), 'Quiet.');
+});
+
+test('a log line carries the local date and time', () => {
+  assert.equal(logLine('IDLE', new Date(2026, 10, 14, 9, 5)), '- 2026-11-14 09:05: IDLE');
+});
+
+test('appending after identical lines works, which Edit could not do', () => {
+  const file = '# R\n\n## Log\n\n- 2026-11-14: IDLE\n- 2026-11-14: IDLE\n';
+  assert.equal(appendLog(file, '- x'), '# R\n\n## Log\n\n- 2026-11-14: IDLE\n- 2026-11-14: IDLE\n- x\n');
+});
+
+test('the line goes at the end of the Log section, not the end of the file', () => {
+  const file = '## Log\n\n- a\n\n## What breaks\n\n- b\n';
+  assert.equal(appendLog(file, '- c'), '## Log\n\n- a\n- c\n\n## What breaks\n\n- b\n');
+});
+
+test('an empty Log section and a missing one both get the line', () => {
+  assert.equal(appendLog('## Log\n', '- c'), '## Log\n- c\n');
+  assert.equal(appendLog('# R\n', '- c'), '# R\n\n## Log\n\n- c\n');
+});
+
+test('log_keep drops the oldest entries and nothing else', () => {
+  const file = '## Log\n\nnote kept\n- 1\n- 2\n- 3\n\n## What breaks\n- b\n';
+  assert.equal(appendLog(file, '- 4', 2), '## Log\n\nnote kept\n- 3\n- 4\n\n## What breaks\n- b\n');
 });

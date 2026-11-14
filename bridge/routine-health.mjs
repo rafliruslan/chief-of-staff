@@ -89,9 +89,57 @@ export function parseDown(text) {
     .filter((s) => s && s !== 'none');
 }
 
-/** The report without the `[down: ...]` line, for the log. */
+/** The report without its `[down: ...]` and `[log: ...]` lines, for the job log. */
 export function stripDown(text) {
-  return String(text || '').replace(/^\s*\[down:[^\]]*\]\s*$/gim, '').trimEnd();
+  return String(text || '').replace(/^\s*\[(?:down|log):[^\]\n]*\]\s*$/gim, '').trimEnd();
+}
+
+/**
+ * LOG LINES. The runner used to tell every run to "append ONE line" to the
+ * Log, while several routine files say a quiet run logs nothing. Runs obeyed
+ * one or the other at random. Worse, the lines a routine writes are often
+ * identical ("IDLE", "no mail"), and Edit anchors on unique text, so appending
+ * after a repeated line failed with "Found N matches": about 400 failed edits
+ * from 2026-10-30 to 11-14 across three routines.
+ *
+ * So the model only says what to log, as a `[log: ...]` line in its report,
+ * and only when its file's rules want one. The runner appends it with the time.
+ */
+export function parseLog(text) {
+  const all = [...String(text || '').matchAll(/^\s*\[log:\s*([^\]\n]*)\]\s*$/gim)];
+  const line = all.length ? all.at(-1)[1].trim() : '';
+  return line && line.toLowerCase() !== 'none' ? line : null;
+}
+
+/** `- YYYY-MM-DD HH:MM: <line>` in local time, the clock the schedules use. */
+export function logLine(line, now = new Date()) {
+  const d = new Date(now);
+  const p = (n) => String(n).padStart(2, '0');
+  return `- ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}: ${line}`;
+}
+
+/**
+ * Add a line at the end of the `## Log` section: before the next `## `
+ * heading, or at the end of the file. A file with no Log section gets one.
+ */
+export function appendLog(text, line, keep = 0) {
+  const lines = String(text).replace(/\n+$/, '').split('\n');
+  const start = lines.findIndex((l) => /^##\s+Log\s*$/i.test(l.trim()));
+  if (start === -1) return `${lines.join('\n')}\n\n## Log\n\n${line}\n`;
+  let end = lines.findIndex((l, i) => i > start && /^##\s/.test(l));
+  if (end === -1) end = lines.length;
+  let at = end;
+  while (at > start + 1 && lines[at - 1].trim() === '') at -= 1;
+  lines.splice(at, 0, line);
+  // `log_keep: N` in the frontmatter: keep the newest N entries. Trimming used
+  // to be the model's chore and mostly did not happen.
+  const n = Number(keep) || 0;
+  if (n > 0) {
+    const entries = [];
+    for (let i = start + 1; i <= at; i++) if (lines[i].startsWith('- ')) entries.push(i);
+    for (const i of entries.slice(0, Math.max(0, entries.length - n)).reverse()) lines.splice(i, 1);
+  }
+  return `${lines.join('\n')}\n`;
 }
 
 /**
