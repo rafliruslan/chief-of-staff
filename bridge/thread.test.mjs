@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { formatThread, composeTask, locationNote, describeFiles, TOOL_MESSAGE_CAP } from './thread.mjs';
+import { formatThread, stampOf, composeTask, locationNote, describeFiles, TOOL_MESSAGE_CAP } from './thread.mjs';
 
 const BOT = 'UBOT';
 const OPERATOR = 'U01EXAMPLE1';
@@ -235,4 +235,12 @@ test('formatThread keeps a long message whole when given the tool cap', () => {
   assert.match(short, /… \(truncated\)$/);
   const whole = formatThread([msg(OPERATOR, long)], BOT, null, OPERATOR, TOOL_MESSAGE_CAP);
   assert.equal(whole, `[the user] ${long}`);
+});
+
+test('the Slack tools stamp each message with its ts and UTC time; the prompt context does not', () => {
+  const m = { user: OPERATOR, text: 'Order #1098 paid', ts: '1792381637.437999', reply_count: 2 };
+  assert.equal(stampOf(m), ' | ts=1792381637.437999 | 2026-10-19 03:47 UTC | replies=2');
+  assert.equal(formatThread([m], BOT, null, OPERATOR, 500, { stamps: true }), '[the user | ts=1792381637.437999 | 2026-10-19 03:47 UTC | replies=2] Order #1098 paid');
+  assert.equal(formatThread([m], BOT, null, OPERATOR), '[the user] Order #1098 paid');
+  assert.equal(stampOf({ ts: 'x' }), '');
 });

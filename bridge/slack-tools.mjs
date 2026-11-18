@@ -365,7 +365,7 @@ export async function callTool(name, args = {}, ctx) {
           limit: Math.min(Math.max(Number(args.limit) || 50, 1), 200),
         });
         const people = [...new Set(messages.map((m) => m.user).filter(Boolean))];
-        const body = formatThread(messages, botUserId, null, allowedUser, TOOL_MESSAGE_CAP);
+        const body = formatThread(messages, botUserId, null, allowedUser, TOOL_MESSAGE_CAP, { stamps: true });
         return text(`${body || '(no readable messages)'}\n\nparticipants: ${people.join(', ') || 'none'}`);
       }
       case 'history': {
@@ -375,7 +375,7 @@ export async function callTool(name, args = {}, ctx) {
         });
         // history is newest first; a transcript reads oldest first.
         const messages = [...(res.messages || [])].reverse();
-        return text(formatThread(messages, botUserId, null, allowedUser, TOOL_MESSAGE_CAP) || '(no readable messages)');
+        return text(formatThread(messages, botUserId, null, allowedUser, TOOL_MESSAGE_CAP, { stamps: true }) || '(no readable messages)');
       }
       case 'channel_info': {
         const { channel: c } = await client.conversations.info({ channel: args.channel });

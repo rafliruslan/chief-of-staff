@@ -73,7 +73,16 @@ export function describeFiles(files) {
  * @param {string} skipTs     ts of the triggering mention, which becomes the prompt
  * @param {string} allowedUser the only person whose words are instructions
  */
-export function formatThread(messages, botUserId, skipTs, allowedUser, cap = MESSAGE_CAP) {
+/** ` | ts=<ts> | 2026-11-18 01:50 UTC | replies=3` for one message; '' when it has no ts. */
+export function stampOf(msg) {
+  const ts = String(msg?.ts || '');
+  if (!/^\d+(\.\d+)?$/.test(ts)) return '';
+  const when = new Date(Number(ts) * 1000).toISOString().slice(0, 16).replace('T', ' ');
+  const replies = Number(msg.reply_count) > 0 ? ` | replies=${Number(msg.reply_count)}` : '';
+  return ` | ts=${ts} | ${when} UTC${replies}`;
+}
+
+export function formatThread(messages, botUserId, skipTs, allowedUser, cap = MESSAGE_CAP, { stamps = false } = {}) {
   const lines = [];
 
   for (const msg of messages || []) {
@@ -109,7 +118,11 @@ export function formatThread(messages, botUserId, skipTs, allowedUser, cap = MES
       cleaned.length > cap ? `${cleaned.slice(0, cap)}… (truncated)` : cleaned;
 
     // After the cap, so a long message cannot cut off the id the agent needs.
-    lines.push(`[${speaker}] ${[capped, files].filter(Boolean).join('\n')}`);
+    // The Slack tools add each message's ts and time. Without them the agent
+    // could not reply in a post's thread, edit it, or tell new from old: Tara's
+    // orders routine stopped on every one of 343 runs, 2026-11-15 to 11-18.
+    const stamp = stamps ? stampOf(msg) : '';
+    lines.push(`[${speaker}${stamp}] ${[capped, files].filter(Boolean).join('\n')}`);
   }
 
   return lines.join('\n');

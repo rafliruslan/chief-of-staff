@@ -107,7 +107,8 @@ export function stripDown(text) {
  */
 export function parseLog(text) {
   const all = [...String(text || '').matchAll(/^\s*\[log:\s*([^\]\n]*)\]\s*$/gim)];
-  const line = all.length ? all.at(-1)[1].trim() : '';
+  // The runner adds the date and time; a run that wrote its own got them twice.
+  const line = all.length ? all.at(-1)[1].trim().replace(/^\**\d{4}-\d{2}-\d{2}(?:[ T]\d{1,2}:\d{2})?\**\s*[:-]?\s*/, '') : '';
   return line && line.toLowerCase() !== 'none' ? line : null;
 }
 

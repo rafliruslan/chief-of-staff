@@ -114,3 +114,9 @@ test('log_keep drops the oldest entries and nothing else', () => {
   const file = '## Log\n\nnote kept\n- 1\n- 2\n- 3\n\n## What breaks\n- b\n';
   assert.equal(appendLog(file, '- 4', 2), '## Log\n\nnote kept\n- 3\n- 4\n\n## What breaks\n- b\n');
 });
+
+test('a date the run wrote itself is dropped, since the runner adds one', () => {
+  assert.equal(parseLog('[log: 2026-11-15 09:00 QUIET. Gmail read]'), 'QUIET. Gmail read');
+  assert.equal(parseLog('[log: **2026-11-15**: POSTED]'), 'POSTED');
+  assert.equal(parseLog('[log: 3 orders added]'), '3 orders added');
+});
