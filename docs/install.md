@@ -129,8 +129,16 @@ both machines, and the thing that differs is one JSON file.
 
 Nothing else in the bridge or the REPL is written against an OS. Every path is
 `homedir()` plus an XDG-shaped suffix, which is a plain directory on macOS too.
-`node --test` in `bridge/` passes 672/672, last run on macOS. The WhatsApp
+`node --test` in `bridge/` passes 758/758, last run on macOS. The WhatsApp
 front door is the exception to all this: it drives WhatsApp Web through Aside.
+
+**Aside first, CDP as the fallback.** One config may name both browsers. The
+agent is then given one: Aside when its `command` is installed and runnable,
+the CDP servers (`browser`, `devtools`, `browser-repl`, or any server with a CDP
+flag) when it is not. The config is never edited; the narrowed copy is written
+beside it as `mcp.resolved.json` (mode 600) and handed to `claude`. A config
+that names only one browser is used as it is. See `resolveMcpConfig` in
+`bridge/browser.mjs`.
 
 ### The allowlist is derived, not written down
 

@@ -33,7 +33,7 @@ import { pickModel, stripDirective } from './router.mjs';
 import { acquire, release } from './lock.mjs';
 import { react, settle, setStatus, splitOutcome, reactionFor, WORKING } from './status.mjs';
 import { createSubscriptionStore, shouldHandle, isStopPhrase, canInterrupt } from './subscriptions.mjs';
-import { allowedTools, browserCdpUrl, deniedBrowserTools, BASE_TOOLS } from './browser.mjs';
+import { allowedTools, browserCdpUrl, deniedBrowserTools, resolveMcpConfig, BASE_TOOLS } from './browser.mjs';
 import { parseInterrupt } from './interrupt.mjs';
 import { createRunRegistry } from './runs.mjs';
 import { createRelayClient, createLinearHandler, startPoller, runPolicy } from './linear.mjs';
@@ -46,7 +46,9 @@ const { App } = bolt;
 
 const ENV_PATH = process.env.AGENT_ENV_PATH || join(homedir(), '.config', 'agentic-browser', 'env');
 const WORKSPACE = process.env.AGENT_WORKSPACE || join(homedir(), '.local', 'share', 'agentic-browser', 'workspace');
-const MCP_CONFIG = process.env.AGENT_MCP_CONFIG || join(homedir(), '.config', 'agentic-browser', 'mcp.json');
+const MCP_SOURCE = process.env.AGENT_MCP_CONFIG || join(homedir(), '.config', 'agentic-browser', 'mcp.json');
+/** The config handed to the agent: MCP_SOURCE with one browser chosen, Aside first. See resolveMcpConfig. */
+let MCP_CONFIG = MCP_SOURCE;
 
 /**
  * Tools the agent may use without being asked.
@@ -258,6 +260,9 @@ async function main() {
 
   // Which browser is attached, read once. A warning rather than a throw: losing
   // the browser should not cost you the channel you would use to ask about it.
+  const picked = await resolveMcpConfig(MCP_SOURCE);
+  MCP_CONFIG = picked.path;
+  if (picked.dropped.length) console.log(`[browser] ${picked.browser} chosen; left out ${picked.dropped.join(', ')}`);
   ALLOWED_TOOLS = await allowedTools(MCP_CONFIG);
   DENIED = await deniedBrowserTools(MCP_CONFIG);
 

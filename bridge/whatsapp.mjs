@@ -1383,9 +1383,11 @@ export async function runAgentTurn({ prompt, who, dm = false }) {
     // Aside has no CDP port; the preflight is a no-op there
   }
   const isTeam = who.role === TEAM;
-  const allowed = await browser.allowedTools(MCP_CONFIG);
+  // One browser, Aside when installed. See resolveMcpConfig.
+  const mcpConfig = (await browser.resolveMcpConfig(MCP_CONFIG)).path;
+  const allowed = await browser.allowedTools(mcpConfig);
   const denied = [
-    ...(await browser.deniedBrowserTools(MCP_CONFIG)),
+    ...(await browser.deniedBrowserTools(mcpConfig)),
     ...(isTeam
       ? [
           ...roles.TEAM_DENIED_TOOLS,
@@ -1405,7 +1407,7 @@ export async function runAgentTurn({ prompt, who, dm = false }) {
     cwd: WORKSPACE,
     model: 'sonnet',
     effort: 'high',
-    mcpConfig: MCP_CONFIG,
+    mcpConfig,
     allowedTools: allowed,
     deniedTools: denied,
     spawnFn,

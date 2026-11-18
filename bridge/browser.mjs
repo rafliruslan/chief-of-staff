@@ -1,4 +1,6 @@
-import { readFile } from 'node:fs/promises';
+import { access, chmod, readFile, rename, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { basename, delimiter, dirname, isAbsolute, join } from 'node:path';
 
 /**
  * Which browser the agent drives is a property of the MCP config, not of this
@@ -156,4 +158,103 @@ export async function deniedBrowserTools(path, { read = readFile } = {}) {
     // An unreadable config must not shorten the denylist.
     return [...LEGACY_DENIED];
   }
+}
+
+/**
+ * ASIDE FIRST, CDP AS THE FALLBACK.
+ *
+ * One config may name both browsers: Aside, and the older CDP stack (Playwright,
+ * chrome-devtools, the plugin's REPL) driving a Chromium on port 9222. Handing
+ * the agent both meant it picked one per turn, so a task could start in one
+ * browser and go looking for its tab in the other. So exactly one is attached:
+ * Aside whenever its CLI is installed, the CDP servers only when it is not.
+ *
+ * A machine whose config names one browser is unchanged, and the config file
+ * itself is never edited. When servers are dropped, the result is written beside
+ * it as `<name>.resolved.json` (mode 600: a server's env may hold a token) and
+ * that is the file `claude --strict-mcp-config` is handed.
+ */
+const CDP_SERVER_NAMES = new Set(['browser', 'devtools', 'browser-repl', 'brave', 'chromium']);
+
+export function isAsideServer(name, server) {
+  return name === 'aside' || basename(String(server?.command || '')) === 'aside';
+}
+
+export function isCdpServer(name, server) {
+  const args = Array.isArray(server?.args) ? server.args : [];
+  return CDP_SERVER_NAMES.has(name) || args.some((a) => CDP_FLAGS.includes(a));
+}
+
+/** Is any Aside server's command present and executable? A bare name is looked up on PATH. */
+export async function asideInstalled(config, { env = process.env, canRun = defaultCanRun } = {}) {
+  const servers = Object.entries(config?.mcpServers || {}).filter(([n, s]) => isAsideServer(n, s));
+  for (const [, server] of servers) {
+    const cmd = String(server?.command || 'aside');
+    const candidates = isAbsolute(cmd) ? [cmd] : String(env.PATH || '').split(delimiter).filter(Boolean).map((d) => join(d, cmd));
+    for (const c of candidates) if (await canRun(c)) return true;
+  }
+  return false;
+}
+
+async function defaultCanRun(path) {
+  try {
+    await access(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pure: which servers to keep. Returns the config to use, which browser that
+ * leaves, and the names dropped.
+ */
+export function pickBrowser(config, hasAside) {
+  const servers = config?.mcpServers && typeof config.mcpServers === 'object' ? config.mcpServers : {};
+  const names = Object.keys(servers);
+  const aside = names.filter((n) => isAsideServer(n, servers[n]));
+  const cdp = names.filter((n) => !aside.includes(n) && isCdpServer(n, servers[n]));
+  const useAside = aside.length > 0 && hasAside;
+  const dropped = useAside ? cdp : aside;
+  const browser = useAside ? 'aside' : cdp.length ? 'cdp' : 'none';
+  if (!dropped.length) return { config, browser, dropped };
+  const kept = Object.fromEntries(names.filter((n) => !dropped.includes(n)).map((n) => [n, servers[n]]));
+  return { config: { ...config, mcpServers: kept }, browser, dropped };
+}
+
+/**
+ * The MCP config path to hand the agent, after choosing its browser.
+ * Never throws: anything unreadable returns the original path untouched, so the
+ * existing "no browser" warnings still fire where they did.
+ */
+export async function resolveMcpConfig(path, { read = readFile, env = process.env, canRun = defaultCanRun, log = console.warn } = {}) {
+  let config;
+  try {
+    config = JSON.parse(await read(path, 'utf8'));
+  } catch {
+    return { path, browser: 'none', dropped: [] };
+  }
+  const picked = pickBrowser(config, await asideInstalled(config, { env, canRun }));
+  if (!picked.dropped.length) return { path, browser: picked.browser, dropped: [] };
+  const out = join(dirname(path), `${basename(path, '.json')}.resolved.json`);
+  const text = `${JSON.stringify(picked.config, null, 2)}\n`;
+  try {
+    let same = false;
+    try {
+      same = (await read(out, 'utf8')) === text;
+    } catch {
+      // not written yet
+    }
+    if (!same) {
+      // Written aside and renamed, so a bridge and a routine starting together never read half a file.
+      const tmp = `${out}.${process.pid}.tmp`;
+      await writeFile(tmp, text, { mode: 0o600 });
+      await chmod(tmp, 0o600);
+      await rename(tmp, out);
+    }
+  } catch (err) {
+    log(`[browser] could not write ${out} (${err.message}); using ${path} with every browser in it`);
+    return { path, browser: 'mixed', dropped: [] };
+  }
+  return { path: out, browser: picked.browser, dropped: picked.dropped };
 }

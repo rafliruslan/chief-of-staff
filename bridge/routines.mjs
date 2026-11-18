@@ -34,7 +34,7 @@ import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { runAgent } from './runner.mjs';
 import { transcriptPathFor } from './mirror.mjs';
-import { allowedTools, deniedBrowserTools } from './browser.mjs';
+import { allowedTools, deniedBrowserTools, resolveMcpConfig } from './browser.mjs';
 import { healBrowser } from './browser-health.mjs';
 import { checkGate, parseDown, stripDown, trackHealth, parseLog, logLine, appendLog } from './routine-health.mjs';
 
@@ -392,7 +392,9 @@ async function main() {
     // what names the transcript, and without it the run would be the only kind
     // of turn the bridge cannot show you afterwards.
     const sessionId = randomUUID();
-    const grant = await routineGrant(MCP_CONFIG);
+    // One browser, Aside when installed. See resolveMcpConfig.
+    const mcpConfig = (await resolveMcpConfig(MCP_CONFIG)).path;
+    const grant = await routineGrant(mcpConfig);
     const result = await runAgent({
       prompt: buildPrompt(name, body, meta),
       sessionId,
@@ -400,7 +402,7 @@ async function main() {
       cwd: WORKSPACE,
       model: meta.model || 'sonnet',
       effort: meta.effort || 'high',
-      mcpConfig: MCP_CONFIG,
+      mcpConfig,
       allowedTools: grant.allowed,
       deniedTools: grant.denied,
       permissionMode: ROUTINE_PERMISSION_MODE,

@@ -190,3 +190,74 @@ test('an unreadable config denies BOTH spellings, not just the current one', () 
     assert.ok(got.includes('mcp__browser__browser_run_code_unsafe'), 'current name');
   }
 });
+
+import { pickBrowser, asideInstalled, resolveMcpConfig, isAsideServer } from './browser.mjs';
+
+const BOTH = {
+  mcpServers: {
+    aside: { command: '/Users/u/.local/bin/aside', args: ['mcp'] },
+    browser: { command: 'npx', args: ['-y', '@playwright/mcp@latest', '--cdp-endpoint', 'http://127.0.0.1:9222'] },
+    devtools: { command: 'npx', args: ['chrome-devtools-mcp@latest', '--browserUrl', 'http://127.0.0.1:9222'] },
+    'browser-repl': { command: 'node', args: ['/x/repl/server.mjs'] },
+    memory: { command: 'node', args: ['/x/memory/server.mjs'] },
+    slack: { command: 'node', args: ['/x/slack-mcp.mjs'] },
+  },
+};
+
+test('Aside is recognised by key or by command', () => {
+  assert.equal(isAsideServer('aside', {}), true);
+  assert.equal(isAsideServer('web', { command: '/opt/bin/aside' }), true);
+  assert.equal(isAsideServer('browser', { command: 'npx' }), false);
+});
+
+test('with Aside installed, the CDP servers go and everything else stays', () => {
+  const r = pickBrowser(BOTH, true);
+  assert.equal(r.browser, 'aside');
+  assert.deepEqual(r.dropped, ['browser', 'devtools', 'browser-repl']);
+  assert.deepEqual(Object.keys(r.config.mcpServers), ['aside', 'memory', 'slack']);
+});
+
+test('without Aside, it falls back to CDP and drops the dead Aside entry', () => {
+  const r = pickBrowser(BOTH, false);
+  assert.equal(r.browser, 'cdp');
+  assert.deepEqual(r.dropped, ['aside']);
+  assert.deepEqual(Object.keys(r.config.mcpServers), ['browser', 'devtools', 'browser-repl', 'memory', 'slack']);
+});
+
+test('a config with one browser is left alone', () => {
+  const asideOnly = { mcpServers: { aside: BOTH.mcpServers.aside, slack: {} } };
+  assert.deepEqual(pickBrowser(asideOnly, true), { config: asideOnly, browser: 'aside', dropped: [] });
+  const cdpOnly = { mcpServers: { browser: BOTH.mcpServers.browser } };
+  assert.deepEqual(pickBrowser(cdpOnly, false), { config: cdpOnly, browser: 'cdp', dropped: [] });
+});
+
+test('Aside counts as installed only if its command can run; a bare name is found on PATH', async () => {
+  const can = (ok) => async (p) => ok.includes(p);
+  assert.equal(await asideInstalled(BOTH, { canRun: can(['/Users/u/.local/bin/aside']) }), true);
+  assert.equal(await asideInstalled(BOTH, { canRun: can([]) }), false);
+  const bare = { mcpServers: { aside: { command: 'aside' } } };
+  assert.equal(await asideInstalled(bare, { env: { PATH: '/a:/b' }, canRun: can(['/b/aside']) }), true);
+  assert.equal(await asideInstalled({ mcpServers: {} }, { canRun: can(['x']) }), false);
+});
+
+test('resolveMcpConfig writes the narrowed config beside the original, private, and reuses it', async () => {
+  const { mkdtemp, writeFile: wf, readFile: rf, stat } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join: j } = await import('node:path');
+  const dir = await mkdtemp(j(tmpdir(), 'mcp-'));
+  const src = j(dir, 'mcp.json');
+  await wf(src, JSON.stringify(BOTH));
+  const r = await resolveMcpConfig(src, { canRun: async () => true });
+  assert.equal(r.path, j(dir, 'mcp.resolved.json'));
+  assert.equal(r.browser, 'aside');
+  assert.deepEqual(Object.keys(JSON.parse(await rf(r.path, 'utf8')).mcpServers), ['aside', 'memory', 'slack']);
+  assert.equal((await stat(r.path)).mode & 0o777, 0o600);
+  assert.deepEqual(JSON.parse(await rf(src, 'utf8')), BOTH);
+  const again = await resolveMcpConfig(src, { canRun: async () => true });
+  assert.equal(again.path, r.path);
+});
+
+test('an unreadable config passes through untouched', async () => {
+  const r = await resolveMcpConfig('/nope/mcp.json', { canRun: async () => true });
+  assert.deepEqual(r, { path: '/nope/mcp.json', browser: 'none', dropped: [] });
+});
