@@ -20,6 +20,7 @@ import { createSessionStore, DEFAULT_STATE_PATH } from './sessions.mjs';
 import { createPendingStore, DEFAULT_PENDING_PATH } from './pending.mjs';
 import { createQueue } from './queue.mjs';
 import { fetchThreadContext, fetchDmContext, composeTask, locationNote, dmLocationNote, describeFiles } from './thread.mjs';
+import { hearClips } from './transcribe.mjs';
 import { parseMention, formatResult } from './text.mjs';
 import { buildBlocks } from './blocks.mjs';
 import { spawn } from 'node:child_process';
@@ -479,7 +480,9 @@ async function main() {
     const route = pickModel(mentioned);
     // The triggering message is left out of the thread transcript (skipTs), so a
     // file attached to it is named here or nowhere.
-    const prompt = [stripDirective(mentioned), describeFiles(event.files)].filter(Boolean).join('\n');
+    // A voice clip is heard here, before the run, since the agent cannot listen.
+    const heard = await hearClips(event.files, { token: SLACK_BOT_TOKEN, client, env, promptPath: join(dirname(ENV_PATH), 'stt-prompt.txt') });
+    const prompt = [stripDirective(mentioned), describeFiles(event.files), heard].filter(Boolean).join('\n');
     // A teammate gets a conversation of their own in the thread. Sharing the
     // operator's would hand them whatever he asked for earlier in it.
     const sessionKey = role === TEAM ? `${convKey}:team:${event.user}` : convKey;
