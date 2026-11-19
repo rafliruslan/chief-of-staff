@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, symlink, lstat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, symlink, lstat, utimes } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { TOOLS, callTool, parseEnv, safeUploadPath, browserUploadRoot, slackError, safeFileName, downloadSlackFile, privateDir, isPlainZip, uploadFenced } from './slack-tools.mjs';
@@ -589,4 +589,45 @@ test('upload obeys the path fence: teammates are refused barred files, ops only 
   assert.match(await up(plain, 'C1', team, null), /need the path fence/);
   assert.equal(await up(plain, 'C1', {}, null), null);
   assert.match(await up(plain, 'C1', {}, { error: 'bad json' }), /could not be read/);
+});
+
+test('file can put a copy in the browser, but only in a session\'s own artifacts folder', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dl-'));
+  const sessions = await mkdtemp(join(tmpdir(), 'sessions-'));
+  const art = join(sessions, '2026-11-19_AbC123', 'artifacts');
+  await mkdir(art, { recursive: true });
+  const client = withFile({ id: 'F0ABC12345', name: 'pack.png', mimetype: 'image/png', size: 4, url_private_download: FILE_URL });
+  const fetchFn = fakeFetch({ body: 'PNG!', headers: { 'content-type': 'image/png' } });
+  const r = await callTool('file', { file: 'F0ABC12345', to_browser: art }, ctx(client, { token: TOKEN, downloadRoot: root, fetchFn, browserArtifacts: sessions }));
+  assert.equal(r.isError, undefined);
+  assert.equal(await readFile(join(art, 'pack.png'), 'utf8'), 'PNG!');
+  assert.match(r.content[0].text, /path\.resolve\('\.\/artifacts\/pack\.png'\)/);
+
+  for (const bad of [sessions, join(sessions, '2026-11-19_AbC123'), join(sessions, '2026-11-19_AbC123', 'tmp'), root]) {
+    await mkdir(bad, { recursive: true });
+    const no = await callTool('file', { file: 'F0ABC12345', to_browser: bad }, ctx(client, { token: TOKEN, downloadRoot: root, fetchFn, browserArtifacts: sessions }));
+    assert.equal(no.isError, true, bad);
+    assert.match(no.content[0].text, /artifacts folder/);
+  }
+  // Not configured: refused, not ignored.
+  const off = await callTool('file', { file: 'F0ABC12345', to_browser: art }, ctx(client, { token: TOKEN, downloadRoot: root, fetchFn }));
+  assert.equal(off.isError, true);
+});
+
+test('on a teammate turn, a browser file saved before the run began is not sent', async () => {
+  const { sessions, session } = await fakeSessions();
+  const fresh = join(session, 'artifacts', 'now.png');
+  const old = join(session, 'artifacts', 'yesterday.png');
+  await writeFile(fresh, 'png');
+  await writeFile(old, 'png');
+  const day = (Date.now() - 86_400_000) / 1000;
+  await utimes(old, day, day);
+  const client = fakeClient();
+  const since = Date.now() - 5000;
+  const no = await callTool('upload', { channel: 'C1', path: old }, ctx(client, { browserSessions: sessions, browserSince: since }));
+  assert.equal(no.isError, true);
+  assert.match(no.content[0].text, /saved in the browser before this request/);
+  const yes = await callTool('upload', { channel: 'C1', path: fresh }, ctx(client, { browserSessions: sessions, browserSince: since }));
+  assert.equal(yes.isError, undefined, yes.content[0].text);
+  assert.equal(client.calls.length, 1);
 });

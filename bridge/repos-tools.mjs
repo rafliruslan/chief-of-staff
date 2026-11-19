@@ -24,8 +24,8 @@
  * `run` and `fetchFn` are injected so tests need no network.
  */
 import { execFile } from 'node:child_process';
-import { mkdir, lstat, realpath, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { copyFile, mkdir, lstat, realpath, rm, stat } from 'node:fs/promises';
+import { dirname, join, posix, sep } from 'node:path';
 
 export const BRANCH_RE = /^[a-z0-9][a-z0-9._-]{0,50}$/;
 const MAX_FILE = 10 * 1024 * 1024;
@@ -41,6 +41,65 @@ const FORBIDDEN = [
 ];
 
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
+/**
+ * What add_file may put in a repo: images, video, audio, fonts and PDFs. Text files the
+ * agent writes with its own file tools, so they need no way in from outside.
+ */
+const ASSET_EXT = /\.(png|jpe?g|gif|webp|avif|svg|ico|mp4|webm|mov|mp3|wav|ogg|pdf|woff2?|ttf|otf)$/i;
+/** A browser session folder (date_id), and the two of its folders a script can save to. */
+const BROWSER_SESSION = /^\d{4}-\d{2}-\d{2}_[A-Za-z0-9]+$/;
+
+/**
+ * Why `from` may not be copied into a repo, or null, with its real path.
+ *
+ * Two places only, judged by real path: a session's `artifacts/` or `tmp/` in the browser
+ * (where a repl script saves what it made) and the Slack download folder (where the
+ * `file` tool puts an attachment). Neither holds anything the agent could not already
+ * open, but both keep files from earlier turns. So on a teammate's turn the file must
+ * have been written since this server started, which is this run: an operator's
+ * screenshot from yesterday stays where it is.
+ */
+export async function assetSource(from, { sessionsDir, downloadRoot, teamSince = null } = {}) {
+  let real;
+  try {
+    real = await realpath(String(from));
+  } catch {
+    return { error: `No such file: ${from}` };
+  }
+  const inside = async (root) => {
+    if (!root) return null;
+    try {
+      const r = await realpath(root);
+      return real.startsWith(r + sep) ? real.slice(r.length + 1).split(sep) : null;
+    } catch {
+      return null;
+    }
+  };
+  const fromBrowser = await inside(sessionsDir);
+  const fromSlack = await inside(downloadRoot);
+  const ok = (fromBrowser && fromBrowser.length > 2 && BROWSER_SESSION.test(fromBrowser[0]) && ['artifacts', 'tmp'].includes(fromBrowser[1])) || (fromSlack && fromSlack.length > 0);
+  if (!ok) return { error: `Refused: ${from} is not in the browser's ./artifacts or ./tmp, or the Slack download folder. Save it there first.` };
+  if ((fromBrowser || fromSlack).some((seg) => seg.startsWith('.'))) return { error: `Refused: ${from} is a hidden file or inside a hidden folder.` };
+  const info = await stat(real);
+  if (!info.isFile()) return { error: `Not a file: ${from}` };
+  if (info.size > MAX_FILE) return { error: `Refused: ${from} is over 10 MB.` };
+  if (teamSince !== null && info.mtimeMs < teamSince) return { error: `Refused: ${from} was saved before this request. On a teammate's request, only a file made or downloaded in this turn can go in.` };
+  return { path: real, size: info.size };
+}
+
+/** The repo-relative path to write, normalised, or an error. */
+export function assetTarget(to) {
+  const raw = String(to ?? '').trim();
+  if (!raw || raw.startsWith('/') || raw.includes('\\') || raw.includes('\0')) return { error: 'to must be a path inside the repo, such as public/images/product.webp.' };
+  const norm = posix.normalize(raw);
+  const parts = norm.split('/');
+  if (parts.some((p) => p === '..' || p === '' || p === '.' || p.startsWith('.'))) return { error: `Refused: ${raw} leaves the repo or names a hidden file.` };
+  if (!ASSET_EXT.test(norm)) return { error: `Refused: ${raw} is not an image, video, audio, font or PDF. Write text files with your file tools.` };
+  const hit = forbiddenHit(norm);
+  if (hit) return { error: `Refused: ${raw} is ${hit}.` };
+  return { path: norm };
+}
 
 /**
  * Parse and check the repos config. Fails closed: anything missing or odd throws, so
@@ -102,6 +161,19 @@ export function toolsFor({ repos }) {
     },
   },
   {
+    name: 'add_file',
+    description: "Copy an image, video, audio, font or PDF into the work tree, for files your file tools cannot write. from is a file the browser saved (in repl, path.resolve('./artifacts/<name>')) or one the Slack file tool downloaded. to is the path inside the repo, for example public/images/product.webp; an existing file there is replaced. Needs a tara/ branch from start_branch. Nothing is committed until push.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: repoArg,
+        from: str('Absolute path of the file to copy in'),
+        to: str('Path inside the repo, for example public/images/product.webp'),
+      },
+      required: ['repo', 'from', 'to'],
+    },
+  },
+  {
     name: 'status',
     description: 'Show the current branch, the files changed in the work tree and, with diff true, the diff against the last commit.',
     inputSchema: { type: 'object', properties: { repo: repoArg, diff: { type: 'boolean' } }, required: ['repo'] },
@@ -142,7 +214,7 @@ export function toolsFor({ repos }) {
 }
 
 /** The same for every config; checked before the config is touched. */
-export const TOOL_NAMES = ['start_branch', 'status', 'push', 'open_pr', 'list_prs', 'merge_pr'];
+export const TOOL_NAMES = ['start_branch', 'add_file', 'status', 'push', 'open_pr', 'list_prs', 'merge_pr'];
 
 const text = (t, isError) => ({ content: [{ type: 'text', text: String(t) }], ...(isError ? { isError: true } : {}) });
 
@@ -240,6 +312,25 @@ export async function callTool(name, args, ctx) {
       // Remember where it was cut, so push can tell whether the branch has anything new.
       await git(['config', `branch.${branch}.taraFrom`, from]);
       return text(`On ${branch}, cut from ${from}. Edit files under ${workTree}, then call push.`);
+    }
+
+    if (name === 'add_file') {
+      await needTaraBranch();
+      const target = assetTarget(args.to);
+      if (target.error) throw new Error(target.error);
+      const src = await assetSource(args.from, ctx.assetSources ?? {});
+      if (src.error) throw new Error(src.error);
+      const dest = join(workTree, ...target.path.split('/'));
+      await mkdir(dirname(dest), { recursive: true });
+      // The folder it lands in must really be inside the work tree, not through a link.
+      const treeReal = await realpath(workTree);
+      const dirReal = await realpath(dirname(dest));
+      if (dirReal !== treeReal && !dirReal.startsWith(treeReal + sep)) throw new Error(`Refused: ${target.path} resolves outside the work tree.`);
+      const old = await lstat(dest).catch(() => null);
+      if (old && !old.isFile()) throw new Error(`Refused: ${target.path} exists and is not a plain file.`);
+      await rm(dest, { force: true }); // a link left at that name is removed, never followed
+      await copyFile(src.path, dest);
+      return text(`${old ? 'Replaced' : 'Added'} ${target.path} in ${args.repo} (${src.size} bytes). Nothing is committed yet: push when the change is done.`);
     }
 
     if (name === 'status') {

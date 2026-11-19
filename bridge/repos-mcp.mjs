@@ -14,6 +14,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { loadRepoConfig, toolsFor, callTool } from './repos-tools.mjs';
+import { DEFAULT_DOWNLOAD_ROOT, parseEnv } from './slack-tools.mjs';
 
 const CONFIG = process.env.REPOS_CONFIG_DIR || join(homedir(), '.config', 'agentic-browser-tara');
 const expand = (p) => (p.startsWith('~/') ? join(homedir(), p.slice(2)) : p);
@@ -35,7 +36,23 @@ const ctx = {
   workRoot,
   // Set by the bridge on a teammate's turn, from Slack; empty on the operator's. Written into commits and PRs.
   requesterName: process.env.AGENT_REQUESTER_NAME || undefined,
+  // Where add_file may copy from: the browser's sessions folder and the Slack download folder.
+  // On a teammate's turn, only files written since this server started, which is this run.
+  assetSources: {
+    sessionsDir: await browserSessionsDir(),
+    downloadRoot: process.env.SLACK_DOWNLOAD_ROOT || DEFAULT_DOWNLOAD_ROOT,
+    teamSince: process.env.AGENT_REQUESTER_ROLE === 'team' ? Date.now() - 5000 : null,
+  },
 };
+
+/** UPLOAD_BROWSER_SESSIONS from the bridge's env file, the same setting the Slack upload uses. */
+async function browserSessionsDir() {
+  try {
+    return parseEnv(await readFile(process.env.AGENT_ENV_PATH || join(homedir(), '.config', 'agentic-browser', 'env'), 'utf8')).UPLOAD_BROWSER_SESSIONS || null;
+  } catch {
+    return null;
+  }
+}
 const tools = toolsFor(config);
 
 const server = new Server({ name: 'repos', version: '0.1.0' }, { capabilities: { tools: {} } });

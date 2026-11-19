@@ -4,7 +4,8 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, rmSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadRepoConfig, toolsFor, callTool, forbiddenHit, TOOL_NAMES } from './repos-tools.mjs';
+import { loadRepoConfig, toolsFor, callTool, forbiddenHit, TOOL_NAMES, assetSource, assetTarget } from './repos-tools.mjs';
+import { utimesSync } from 'node:fs';
 
 const CONFIG = loadRepoConfig(JSON.stringify({
   _why: 'notes are ignored',
@@ -433,4 +434,85 @@ test('moving a workflow file out of .github is refused, and nothing is committed
   assert.match(r.content[0].text, /Refusing \.github\/workflows\/ci\.yml/);
   assert.deepEqual(heads(origin), ['develop', 'main']);
   rmSync(dir, { recursive: true });
+});
+
+// A browser sessions folder with one session, and a Slack download folder, as add_file's sources.
+function assetDirs(dir) {
+  const sessionsDir = join(dir, 'sessions');
+  const art = join(sessionsDir, '2026-11-19_AbC123', 'artifacts');
+  mkdirSync(art, { recursive: true });
+  const downloadRoot = join(dir, 'slack-files');
+  mkdirSync(join(downloadRoot, 'F0ABC'), { recursive: true });
+  return { sessionsDir, art, downloadRoot };
+}
+
+test('add_file paths: only assets, only inside the repo, never a refused kind of file', () => {
+  assert.equal(assetTarget('public/images/product-pack.webp').path, 'public/images/product-pack.webp');
+  assert.equal(assetTarget('public//img/./a.PNG').path, 'public/img/a.PNG');
+  for (const bad of ['', '/etc/x.png', '../x.png', 'a/../../x.png', 'a\\b.png', '.github/x.png', 'a/.hidden/x.png', 'src/app.js', 'index.html', 'x.png.sh', 'node_modules/x.png']) {
+    assert.ok(assetTarget(bad).error, bad);
+  }
+});
+
+test('add_file sources: the browser artifacts or Slack downloads, and on a teammate turn only this run\'s files', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'asset-src-'));
+  const { sessionsDir, art, downloadRoot } = assetDirs(dir);
+  const ok = join(art, 'pack.webp');
+  writeFileSync(ok, 'WEBP');
+  const dl = join(downloadRoot, 'F0ABC', 'pack.png');
+  writeFileSync(dl, 'PNG');
+  const src = { sessionsDir, downloadRoot };
+  assert.equal((await assetSource(ok, src)).size, 4);
+  assert.equal((await assetSource(dl, src)).size, 3);
+
+  const outside = join(dir, 'secret.png');
+  writeFileSync(outside, 'x');
+  const otherFolder = join(sessionsDir, '2026-11-19_AbC123', 'notes.png');
+  writeFileSync(otherFolder, 'x');
+  const link = join(art, 'link.png');
+  symlinkSync(outside, link);
+  const hidden = join(art, '.h.png');
+  writeFileSync(hidden, 'x');
+  for (const bad of [outside, otherFolder, link, hidden, join(art, 'missing.png')]) assert.ok((await assetSource(bad, src)).error, bad);
+
+  // An older file, say the operator's screenshot from yesterday, is refused on a teammate's turn.
+  const old = (Date.now() - 86_400_000) / 1000;
+  utimesSync(ok, old, old);
+  assert.match((await assetSource(ok, { ...src, teamSince: Date.now() - 5000 })).error, /before this request/);
+  assert.equal((await assetSource(ok, src)).size, 4);
+  assert.equal((await assetSource(dl, { ...src, teamSince: Date.now() - 5000 })).size, 3);
+});
+
+test('add_file copies a binary into the tara/ branch, and push commits it', async () => {
+  const { dir, origin, ctx, work } = setup();
+  const { sessionsDir, art, downloadRoot } = assetDirs(dir);
+  const c = { ...ctx, assetSources: { sessionsDir, downloadRoot } };
+  const bytes = Buffer.from([0x52, 0x49, 0x46, 0x46, 0, 1, 2, 255, 0x57, 0x45, 0x42, 0x50]);
+  writeFileSync(join(art, 'pack.webp'), bytes);
+
+  const early = await callTool('add_file', { repo: 'site', from: join(art, 'pack.webp'), to: 'public/images/pack.webp' }, c);
+  assert.equal(early.isError, true, 'needs a tara/ branch first');
+
+  await callTool('start_branch', { repo: 'site', name: 'new-pack' }, c);
+  const r = await callTool('add_file', { repo: 'site', from: join(art, 'pack.webp'), to: 'public/images/pack.webp' }, c);
+  assert.equal(r.isError, undefined, r.content[0].text);
+  assert.match(r.content[0].text, /^Added public\/images\/pack\.webp in site \(12 bytes\)/);
+  assert.deepEqual(readFileSync(join(work, 'public', 'images', 'pack.webp')), bytes);
+
+  const again = await callTool('add_file', { repo: 'site', from: join(art, 'pack.webp'), to: 'public/images/pack.webp' }, c);
+  assert.match(again.content[0].text, /^Replaced/);
+
+  // A folder in the work tree that links out of it is not followed.
+  const away = join(dir, 'away');
+  mkdirSync(away);
+  symlinkSync(away, join(work, 'escape'));
+  const esc = await callTool('add_file', { repo: 'site', from: join(art, 'pack.webp'), to: 'escape/pack.webp' }, c);
+  assert.equal(esc.isError, true);
+  assert.match(esc.content[0].text, /outside the work tree/);
+  rmSync(join(work, 'escape'));
+
+  const p = await callTool('push', { repo: 'site', message: 'New product pack image' }, c);
+  assert.equal(p.isError, undefined, p.content[0].text);
+  const blob = execFileSync('git', ['--git-dir', origin, 'show', 'refs/heads/tara/new-pack:public/images/pack.webp']);
+  assert.deepEqual(blob, bytes);
 });

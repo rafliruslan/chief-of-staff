@@ -100,7 +100,7 @@ each one with a comment.
 | `MAX_CONCURRENT` | How many runs may be in flight at once across threads. Default 3. |
 | `LINEAR_RELAY_URL`, `LINEAR_RELAY_TOKEN`, `LINEAR_AGENT` | All three or none: where the relay is, this bridge's pull token, and the name the relay knows it by. Set up the Worker first; see `linear-relay/README.md`. |
 | `UNZIP_SANDBOX` | The `file` tool unpacks a `.zip` beside it and lists the files; nothing in it is run. The default strict profile has lower size caps and skips programs, scripts, installers and hidden files. `0` turns it off. |
-| `UPLOAD_BROWSER_SESSIONS` | Absolute path of the browser's sessions folder. `upload` may then send a file the browser saved to a session's `artifacts/` or `tmp/`, judged by its real path. Never on a teammate's turn. |
+| `UPLOAD_BROWSER_SESSIONS` | Absolute path of the browser's sessions folder. `upload` may then send a file the browser saved to a session's `artifacts/` or `tmp/`, judged by its real path, and the repos tool's `add_file` may copy one into a work tree. On a teammate's turn only a file saved during that run goes. The Slack `file` tool can also drop an attachment into a session's `artifacts/` (`to_browser`), so a browser script can work on it. |
 
 WhatsApp has its own config, `whatsapp.json` (path in `WA_CONFIG`), naming the
 chats to answer and each one's role, and runs from a timer job like the

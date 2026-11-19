@@ -50,9 +50,14 @@ const ctx = {
   // on macOS they differ, and screenshots land in both.
   uploadRoots: [process.cwd(), process.env.AGENT_WORKSPACE, tmpdir(), '/tmp'].filter(Boolean),
   // The browser's sessions folder, for an agent with no shell to copy a saved screenshot out of
-  // it. Opt-in per deployment (UPLOAD_BROWSER_SESSIONS), and never on a teammate's turn: those
-  // folders hold whatever the operator had the browser open on.
-  browserSessions: process.env.AGENT_REQUESTER_ROLE === 'team' ? null : env.UPLOAD_BROWSER_SESSIONS || null,
+  // it. Opt-in per deployment (UPLOAD_BROWSER_SESSIONS). Those folders also hold whatever the
+  // operator had the browser save on earlier turns, so on a teammate's turn only a file saved
+  // since this server started, which is this run, may go.
+  browserSessions: env.UPLOAD_BROWSER_SESSIONS || null,
+  browserSince: process.env.AGENT_REQUESTER_ROLE === 'team' ? Date.now() - 5000 : null,
+  // The other way, open on every turn: `file` may put a Slack attachment (which the requester
+  // can already see) into the browser's artifacts folder, so a script there can work on it.
+  browserArtifacts: env.UPLOAD_BROWSER_SESSIONS || null,
   // For the `file` tool only. It is sent to slack.com and appears in no result.
   token: env.SLACK_BOT_TOKEN,
   // A zip is unpacked under the strict profile unless the env file says UNZIP_SANDBOX=0.
