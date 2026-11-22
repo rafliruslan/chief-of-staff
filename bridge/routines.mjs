@@ -37,6 +37,7 @@ import { transcriptPathFor } from './mirror.mjs';
 import { allowedTools, deniedBrowserTools, resolveMcpConfig } from './browser.mjs';
 import { healBrowser } from './browser-health.mjs';
 import { checkGate, parseDown, stripDown, trackHealth, parseLog, logLine, appendLog } from './routine-health.mjs';
+import { parseProbe, runProbe, decide, DEFAULT_RETRY_MIN } from './probes.mjs';
 
 const WORKSPACE =
   process.env.AGENT_WORKSPACE || join(homedir(), '.local', 'share', 'agentic-browser', 'workspace');
@@ -67,6 +68,34 @@ async function alertOperator(text) {
   } catch (err) {
     console.warn(`[routines] alert not sent (${err.message}): ${text}`);
   }
+}
+
+/**
+ * What a probe needs from outside: the bot's Slack client and `aside repl` on the
+ * routine's own browser account (the `--account` in the MCP config). See probes.mjs.
+ */
+function probeDeps(meta) {
+  const list = (v) => String(v ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  return {
+    slack: async () => {
+      const { parseEnv } = await import('./slack-tools.mjs');
+      const env = parseEnv(await readFile(ENV_PATH, 'utf8'));
+      if (!env.SLACK_BOT_TOKEN) throw new Error('SLACK_BOT_TOKEN missing');
+      const { default: bolt } = await import('@slack/bolt');
+      return new bolt.webApi.WebClient(env.SLACK_BOT_TOKEN);
+    },
+    repl: async (code) => {
+      const cfg = JSON.parse(await readFile(MCP_CONFIG, 'utf8'));
+      const args = cfg.mcpServers?.aside?.args || [];
+      const i = args.indexOf('--account');
+      const account = i >= 0 ? args[i + 1] : 'u0';
+      const { execFile } = await import('node:child_process');
+      return new Promise((resolve) => {
+        execFile('aside', ['repl', '--account', account, code], { timeout: 120_000 }, (err, stdout) => resolve(String(stdout || '')));
+      });
+    },
+    waConfig: { groups: list(meta.probe_groups), tags: list(meta.probe_tags) },
+  };
 }
 
 /**
@@ -335,6 +364,8 @@ async function main() {
 
   let state = await loadState();
   let ran = 0;
+  // Fingerprints the probes saw this tick, kept once the run they started succeeds.
+  const probeSeen = {};
 
   for (const file of files) {
     const name = basename(file, '.md');
@@ -362,6 +393,21 @@ async function main() {
         const gate = await checkGate(meta.gate, (f) => readFile(join(ROUTINES, basename(f)), 'utf8'));
         if (!gate.open) continue;
         if (gate.reason.includes('anyway')) console.warn(`[routines] ${name}: ${gate.reason}`);
+      }
+      // A probe asks the Slack API or one browser script whether there is work, so
+      // a quiet run costs no model. See probes.mjs. Not logged when closed either.
+      if (meta.probe) {
+        const probe = parseProbe(meta.probe);
+        if (!probe) {
+          console.warn(`[routines] ${name}: bad probe "${meta.probe}", running anyway`);
+        } else {
+          const res = await runProbe(probe, probeDeps(meta));
+          const d = decide(res, state[name]?.probe, now.getTime(), Number(meta.probe_retry) || DEFAULT_RETRY_MIN);
+          if (!d.run) continue;
+          if (d.reason.includes('anyway')) console.warn(`[routines] ${name}: ${d.reason}`);
+          else console.log(`[routines] ${name}: probe says ${d.reason}`);
+          if (res.fingerprint) probeSeen[name] = res.fingerprint;
+        }
       }
       // A timer that fires late must not run a routine late. Skip, do not catch up.
       const key = fireKey(now);
@@ -423,6 +469,7 @@ async function main() {
       cost: result.costUsd,
       sessionId,
       health,
+      ...(result.ok && probeSeen[name] ? { probe: { fp: probeSeen[name], at: now.toISOString() } } : {}),
     };
     console.log(`[routines] ${name}: ${result.ok ? 'ok' : 'FAILED'}`);
     console.log(stripDown(result.text).split('\n').slice(0, 12).join('\n'));
