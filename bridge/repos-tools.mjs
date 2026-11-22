@@ -226,14 +226,31 @@ export function toolsFor({ repos }) {
   ];
 }
 
-/** Lines worth reading from a job log: no timestamps or colour codes, the last `max` lines. */
+/** Where a test runner or build tool says something failed. */
+const FAILURE = /^(not ok\b|\s*✖|FAIL\b|npm ERR!|npm error\b|error TS\d|\s*(\w+)?Error:|\[error\])/;
+
+/**
+ * Lines worth reading from a job log: no timestamps or colour codes, the last `max` lines,
+ * and, ahead of them, a few lines after each of the first failures when the tail alone
+ * would be a test summary that names none of them.
+ */
 export function logTail(raw, max = 60) {
   const lines = String(raw ?? '')
     .replace(/\x1b\[[0-9;]*m/g, '')
     .split(/\r?\n/)
     .map((l) => l.replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z ?/, ''))
     .filter((l) => l.trim() && !/^##\[(group|endgroup)\]/.test(l));
-  return lines.slice(-max).join('\n').slice(-6000);
+  const from = Math.max(0, lines.length - max);
+  const tail = lines.slice(from).join('\n');
+  const keep = new Set();
+  for (const [i] of lines.slice(0, from).map((l, i) => [i, l]).filter(([, l]) => FAILURE.test(l)).slice(0, 5)) {
+    for (let j = i; j < Math.min(i + 20, from); j += 1) keep.add(j);
+  }
+  if (!keep.size) return tail.slice(-6000);
+  const early = [...keep].sort((a, b) => a - b)
+    .map((j, k, all) => (k > 0 && all[k - 1] !== j - 1 ? `...\n${lines[j]}` : lines[j]))
+    .join('\n').slice(0, 3500);
+  return `${early}\n... (last lines)\n${tail.slice(-(6000 - early.length))}`;
 }
 
 const RUNNING = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);

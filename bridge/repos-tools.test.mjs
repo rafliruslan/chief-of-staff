@@ -574,3 +574,23 @@ test('logTail keeps the last lines and drops timestamps', () => {
   const t = logTail(raw, 3);
   assert.equal(t, 'line 97\nline 98\nline 99');
 });
+
+test('logTail brings early failures forward when the tail is only a summary', () => {
+  const pass = (i) => [`# Subtest: case ${i}`, `ok ${i} - case ${i}`, '  ---', '  duration_ms: 0.1', '  ...'];
+  const lines = [
+    ...pass(1),
+    '# Subtest: id: nothing left in English',
+    'not ok 2 - id: nothing left in English',
+    '  error: |-',
+    '    id still has English strings',
+    "    +   'home.notes.items.3.byline'",
+    ...Array.from({ length: 30 }, (_, i) => pass(i + 3)).flat(),
+    '# tests 32', '# pass 31', '# fail 1',
+    '##[error]Process completed with exit code 1.',
+  ];
+  const t = logTail(lines.map((l) => `2026-11-22T05:05:44.0000000Z ${l}`).join('\n'), 10);
+  assert.match(t, /not ok 2 - id: nothing left in English/);
+  assert.match(t, /home\.notes\.items\.3\.byline/);
+  assert.match(t, /# fail 1/);
+  assert.ok(t.indexOf('not ok 2') < t.indexOf('# fail 1'), 'failures first, then the end of the log');
+});
