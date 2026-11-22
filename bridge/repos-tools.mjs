@@ -533,9 +533,12 @@ export async function callTool(name, args, ctx) {
       }
       // Checks from other apps (a Cloudflare Pages build, say). Optional: the token may not read them.
       let others = [];
+      let othersHidden = false;
       try {
         others = ((await getJson(`${repoApi}/commits/${sha}/check-runs?per_page=30`)).check_runs ?? []).filter((c) => c.app?.slug !== 'github-actions');
-      } catch {}
+      } catch {
+        othersHidden = true;
+      }
       let statuses = [];
       try {
         statuses = (await getJson(`${repoApi}/commits/${sha}/status`)).statuses ?? [];
@@ -557,6 +560,7 @@ export async function callTool(name, args, ctx) {
       }
       for (const c of others) out.push(`- ${c.name} (${c.app?.slug}): ${c.status === 'completed' ? c.conclusion : c.status}${c.details_url ? ` ${c.details_url}` : ''}`);
       for (const st of statuses) out.push(`- ${st.context}: ${st.state}${st.target_url ? ` ${st.target_url}` : ''}`);
+      if (othersHidden) out.push('(Checks from other apps, such as a Cloudflare Pages build, are not readable with this token. Only the GitHub Actions results above count.)');
       return text(scrub(out.join('\n'), token));
     }
   } catch (err) {

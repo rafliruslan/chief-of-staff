@@ -540,6 +540,7 @@ test('checks: a failed run shows the failing step and the end of its log, with t
   assert.match(t, /src\/Hero.astro:4 Type error \*\*\*/);
   assert.doesNotMatch(t, /sekret-token|##\[group\]|\x1b/);
   assert.match(t, /Cloudflare Pages \(cloudflare-workers-and-pages\): success https:\/\/cf\/x/);
+  assert.doesNotMatch(t, /not readable with this token/);
 });
 
 test('checks: only tara/, main or the preview branch, and a 403 on Actions says what to fix', async () => {
@@ -550,6 +551,7 @@ test('checks: only tara/, main or the preview branch, and a 403 on Actions says 
     : { ok: false, status: 403, json: async () => ({}) });
   const r = await callTool('checks', { repo: 'site', branch: 'main' }, ctx(forbidden));
   assert.match(r.content[0].text, /Actions: read/);
+  assert.match(r.content[0].text, /other apps, such as a Cloudflare Pages build, are not readable/);
 });
 
 test('checks: waits while a run is still going, then reports it', async () => {
