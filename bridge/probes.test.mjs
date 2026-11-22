@@ -73,3 +73,52 @@ test('fingerprints ignore order, and the sentinel line is found among others', (
   assert.deepEqual(readSentinel('noise\n@@PROBE@@{"state":"ok"}\nmore'), { state: 'ok' });
   assert.equal(readSentinel('nothing'), null);
 });
+
+import { rollProbe } from './probes.mjs';
+
+const ROLL = parseProbe('roll SEA=0900-1130 EU=1600-1730 daily=0b: weekly=WEEKLY');
+const halfHourly = (d) => d.getMinutes() % 30 === 0;
+const file = (posted, log) => `# R\n\n## Posted\n\nFormat: date | window\n\n${posted}\n\n## Log\n\n${log}\n`;
+const at = (s) => new Date(s); // local time, as the runner sees it
+
+test('the roll waits for nothing when a daily job is not done today', () => {
+  const r = rollProbe(ROLL, { text: file('', '- 2026-11-20 09:00: 0b: scored 3'), now: at('2026-11-20T13:00:00'), firesAt: halfHourly, random: () => 0.99 });
+  assert.equal(r.open, false, 'done today, outside a window');
+  const due = rollProbe(ROLL, { text: file('', '- 2026-11-19 09:00: 0b: scored 3'), now: at('2026-11-20T13:00:00'), firesAt: halfHourly, random: () => 0.99 });
+  assert.equal(due.open, true);
+  assert.match(due.reason, /daily job/);
+});
+
+test('Sunday opens until the weekly line is in the Log', () => {
+  const sun = at('2026-11-22T13:00:00');
+  const log = '- 2026-11-22 09:00: 0b: scored 2';
+  assert.equal(rollProbe(ROLL, { text: file('', log), now: sun, firesAt: halfHourly, random: () => 0.99 }).open, true);
+  assert.equal(rollProbe(ROLL, { text: file('', `${log} WEEKLY posted`), now: sun, firesAt: halfHourly, random: () => 0.99 }).open, false);
+});
+
+test('in a window: closed once posted, else 1 in the firings left', () => {
+  const log = '- 2026-11-20 09:00: 0b: scored 3';
+  const now = at('2026-11-20T10:30:00');
+  const posted = '- 2026-11-20 | SEA | EN | no | someone | https://x | hi';
+  assert.match(rollProbe(ROLL, { text: file(posted, log), now, firesAt: halfHourly, random: () => 0 }).reason, /already posted/);
+  const pass = rollProbe(ROLL, { text: file('- 2026-11-20 | EU | EN', log), now, firesAt: halfHourly, random: () => 0.3 });
+  assert.equal(pass.open, true);
+  assert.match(pass.reason, /1 in 3/);
+  assert.equal(rollProbe(ROLL, { text: file('', log), now, firesAt: halfHourly, random: () => 0.34 }).open, false);
+  const last = rollProbe(ROLL, { text: file('', log), now: at('2026-11-20T11:30:00'), firesAt: halfHourly, random: () => 0.99 });
+  assert.equal(last.open, true, 'the last firing always passes');
+});
+
+test('gmail-new: the newest unread time per account is the fingerprint', async () => {
+  const p = parseProbe('gmail-new accounts=0,2');
+  assert.deepEqual(p, { kind: 'gmail-new', accounts: [0, 2] });
+  const repl = async () => `@@PROBE@@${JSON.stringify({ state: 'ok', newest: { 0: 100, 2: 0 } })}`;
+  const r = await runProbe(p, { repl });
+  assert.equal(r.fingerprint, '0:100|2:0');
+  const now = Date.parse('2026-11-22T10:00:00Z');
+  assert.equal(decide(r, { fp: '0:100|2:0', at: '2026-11-22T09:30:00Z' }, now, 120).run, false, 'no new mail, inside the retry window');
+  assert.equal(decide(r, { fp: '0:90|2:0', at: '2026-11-22T09:30:00Z' }, now, 120).run, true, 'new mail');
+  assert.equal(decide(r, { fp: '0:100|2:0', at: '2026-11-22T07:59:00Z' }, now, 120).run, true, 'full scan due');
+  const signedOut = async () => `@@PROBE@@${JSON.stringify({ state: 'ok', newest: { 0: 'http 401', 2: 0 } })}`;
+  assert.equal((await runProbe(p, { repl: signedOut })).fingerprint, undefined, 'an unreadable feed never matches, so it runs');
+});

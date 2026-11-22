@@ -74,7 +74,7 @@ async function alertOperator(text) {
  * What a probe needs from outside: the bot's Slack client and `aside repl` on the
  * routine's own browser account (the `--account` in the MCP config). See probes.mjs.
  */
-function probeDeps(meta) {
+function probeDeps(meta, text, now) {
   const list = (v) => String(v ?? '').split(',').map((x) => x.trim()).filter(Boolean);
   return {
     slack: async () => {
@@ -95,6 +95,10 @@ function probeDeps(meta) {
       });
     },
     waConfig: { groups: list(meta.probe_groups), tags: list(meta.probe_tags) },
+    // For the roll probe: the routine's own file and schedule.
+    text,
+    now,
+    firesAt: (d) => isDue(meta.schedule, d).due,
   };
 }
 
@@ -366,10 +370,13 @@ async function main() {
   let ran = 0;
   // Fingerprints the probes saw this tick, kept once the run they started succeeds.
   const probeSeen = {};
+  // What each probe found, told to the model so it does not check (or roll) again.
+  const probeNote = {};
 
   for (const file of files) {
     const name = basename(file, '.md');
-    const { meta, body } = frontmatter(await readFile(join(ROUTINES, file), 'utf8'));
+    const raw = await readFile(join(ROUTINES, file), 'utf8');
+    const { meta, body } = frontmatter(raw);
 
     if (forced) {
       if (name !== forced) continue;
@@ -401,12 +408,13 @@ async function main() {
         if (!probe) {
           console.warn(`[routines] ${name}: bad probe "${meta.probe}", running anyway`);
         } else {
-          const res = await runProbe(probe, probeDeps(meta));
+          const res = await runProbe(probe, probeDeps(meta, raw, now));
           const d = decide(res, state[name]?.probe, now.getTime(), Number(meta.probe_retry) || DEFAULT_RETRY_MIN);
           if (!d.run) continue;
           if (d.reason.includes('anyway')) console.warn(`[routines] ${name}: ${d.reason}`);
           else console.log(`[routines] ${name}: probe says ${d.reason}`);
           if (res.fingerprint) probeSeen[name] = res.fingerprint;
+          probeNote[name] = d.reason;
         }
       }
       // A timer that fires late must not run a routine late. Skip, do not catch up.
@@ -442,7 +450,7 @@ async function main() {
     const mcpConfig = (await resolveMcpConfig(MCP_CONFIG)).path;
     const grant = await routineGrant(mcpConfig);
     const result = await runAgent({
-      prompt: buildPrompt(name, body, meta),
+      prompt: buildPrompt(name, probeNote[name] ? `> Runner probe, before this run: ${probeNote[name]}.\n\n${body}` : body, meta),
       sessionId,
       isNew: true,
       cwd: WORKSPACE,

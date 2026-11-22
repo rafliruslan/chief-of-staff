@@ -16,6 +16,17 @@
  *   probe: "whatsapp-inbox"
  *       Open when the WhatsApp chat list holds an unread one-to-one chat or a
  *       group that tags the account. Reads the list only, never opens a chat.
+ *   probe: "gmail-new accounts=0,1,2"
+ *       Open when the newest unread mail in any of those Gmail accounts (/mail/u/N)
+ *       differs from the last good run's. Reads each inbox's Atom feed in one
+ *       tab and closes it. Pair it with `probe_retry` so the full scan still runs
+ *       every few hours for what mail does not announce (a meeting coming up).
+ *   probe: "roll SEA=0900-1130 EU=1600-1730 daily=0b: weekly=WEEKLY"
+ *       For a routine that acts once per named window per day at a random
+ *       firing. Open when a daily (or Sunday) job has no Log line today; else
+ *       closed outside a window or when the window has a `## Posted` row today;
+ *       else roll 1 in (firings left in the window). The runner tells the model
+ *       the roll passed, so it does not roll again.
  *
  * Every probe returns { open, reason, fingerprint }. The runner keeps the
  * fingerprint of the last successful run and skips a repeat of it for
@@ -34,6 +45,9 @@ export const DEFAULT_RETRY_MIN = 60;
 export function parseProbe(spec) {
   const s = String(spec ?? '').trim();
   if (s === 'whatsapp-inbox') return { kind: 'whatsapp-inbox' };
+  if (s.startsWith('roll ')) return parseRoll(s.slice(5));
+  const g = s.match(/^gmail-new\s+accounts=([\d,]+)$/);
+  if (g) return { kind: 'gmail-new', accounts: g[1].split(',').map(Number) };
   const m = s.match(/^slack-unreplied\s+([CDG][A-Z0-9]+)\s+since=(\d+(?:\.\d+)?)\s+match=(.+)$/);
   if (!m) return null;
   try {
@@ -41,6 +55,57 @@ export function parseProbe(spec) {
   } catch {
     return null;
   }
+}
+
+function parseRoll(rest) {
+  const windows = [];
+  let daily = null;
+  let weekly = null;
+  for (const tok of rest.trim().split(/\s+/)) {
+    const w = tok.match(/^([A-Za-z]+)=(\d{4})-(\d{4})$/);
+    if (w) windows.push({ name: w[1], from: Number(w[2]), to: Number(w[3]) });
+    else if (tok.startsWith('daily=')) daily = tok.slice(6);
+    else if (tok.startsWith('weekly=')) weekly = tok.slice(7);
+    else return null;
+  }
+  return windows.length ? { kind: 'roll', windows, daily, weekly } : null;
+}
+
+const pad = (n) => String(n).padStart(2, '0');
+const dayOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const hhmm = (d) => d.getHours() * 100 + d.getMinutes();
+
+/** The `- YYYY-MM-DD...` lines of a `## <heading>` section dated `day`. */
+function linesOn(text, heading, day) {
+  const m = String(text).match(new RegExp(`^## ${heading}\\b[^\\n]*\\n([\\s\\S]*?)(?=^## |(?![\\s\\S]))`, 'm'));
+  return m ? m[1].split('\n').filter((l) => l.startsWith(`- ${day}`)) : [];
+}
+
+/**
+ * The roll, without a model. `firesAt(date)` says whether the routine's schedule
+ * fires at that minute; `random` is injectable for tests.
+ */
+export function rollProbe(probe, { text, now = new Date(), firesAt, random = Math.random }) {
+  const day = dayOf(now);
+  const log = linesOn(text, 'Log', day);
+  if (probe.daily && !log.some((l) => l.includes(probe.daily))) return { open: true, reason: `daily job (${probe.daily}) not done today` };
+  if (probe.weekly && now.getDay() === 0 && !log.some((l) => l.includes(probe.weekly))) {
+    return { open: true, reason: `Sunday job (${probe.weekly}) not done today` };
+  }
+  const t = hhmm(now);
+  const w = probe.windows.find((x) => t >= x.from && t <= x.to);
+  if (!w) return { open: false, reason: 'outside every window' };
+  if (linesOn(text, 'Posted', day).some((l) => l.split('|')[1]?.trim() === w.name)) {
+    return { open: false, reason: `${w.name} already posted today` };
+  }
+  let left = 0;
+  const end = new Date(now);
+  end.setHours(Math.floor(w.to / 100), w.to % 100, 0, 0);
+  for (let d = new Date(now); d <= end; d = new Date(d.getTime() + 60_000)) if (firesAt(d)) left += 1;
+  left = Math.max(left, 1);
+  return random() < 1 / left
+    ? { open: true, reason: `roll passed (1 in ${left}) for ${w.name}` }
+    : { open: false, reason: `roll failed (1 in ${left})` };
 }
 
 export const fingerprint = (items) =>
@@ -126,6 +191,26 @@ if (state === 'ok') {
 console.log(${JSON.stringify(SENTINEL)} + JSON.stringify({ state, rows }));
 `;
 
+/** One `aside repl` script: newest unread mail time per Gmail account, from the Atom feed. */
+export const gmailNewJs = (accounts) => `
+const page = await openTab('https://mail.google.com/mail/u/0/');
+await new Promise((r) => setTimeout(r, 3000));
+const out = await page.evaluate(async (accounts) => {
+  const res = {};
+  for (const u of accounts) {
+    try {
+      const r = await fetch('/mail/u/' + u + '/feed/atom', { credentials: 'include' });
+      const xml = await r.text();
+      const times = [...xml.matchAll(/<entry>[\\s\\S]*?<issued>([^<]+)<\\/issued>/g)].map((m) => Date.parse(m[1]));
+      res[u] = r.ok ? (times.length ? Math.max(...times) : 0) : 'http ' + r.status;
+    } catch (e) { res[u] = 'error'; }
+  }
+  return res;
+}, ${JSON.stringify(accounts)});
+await page.close();
+console.log(${JSON.stringify(SENTINEL)} + JSON.stringify({ state: 'ok', newest: out }));
+`;
+
 /** The JSON object a probe script printed after the sentinel, or null. */
 export function readSentinel(stdout) {
   const line = String(stdout || '').split('\n').find((l) => l.includes(SENTINEL));
@@ -153,6 +238,15 @@ export async function runProbe(probe, deps) {
       return ts.length
         ? { open: true, reason: `${ts.length} post(s) with no reply`, fingerprint: fingerprint(ts) }
         : { open: false, reason: 'no unreplied posts' };
+    }
+    if (probe.kind === 'roll') return rollProbe(probe, deps);
+    if (probe.kind === 'gmail-new') {
+      const out = readSentinel(await deps.repl(gmailNewJs(probe.accounts)));
+      const newest = out?.newest || {};
+      if (!out || Object.values(newest).some((v) => typeof v !== 'number')) {
+        return { open: true, reason: 'Gmail feed unreadable, running anyway' };
+      }
+      return { open: true, reason: 'Gmail read, newest unread mail changed or full scan due', fingerprint: probe.accounts.map((u) => `${u}:${newest[u]}`).join('|') };
     }
     if (probe.kind === 'whatsapp-inbox') {
       const out = readSentinel(await deps.repl(WA_LIST_JS));
