@@ -516,3 +516,61 @@ test('add_file copies a binary into the tara/ branch, and push commits it', asyn
   const blob = execFileSync('git', ['--git-dir', origin, 'show', 'refs/heads/tara/new-pack:public/images/pack.webp']);
   assert.deepEqual(blob, bytes);
 });
+
+import { logTail } from './repos-tools.mjs';
+
+test('checks: a failed run shows the failing step and the end of its log, with the token scrubbed', async () => {
+  const sha = 'b'.repeat(40);
+  const fetchFn = async (url) => {
+    const json = (body) => ({ ok: true, status: 200, json: async () => body, text: async () => body });
+    if (url.endsWith('/commits/tara%2Fnew-hero')) return json({ sha });
+    if (url.includes('/actions/runs?head_sha=')) return json({ workflow_runs: [{ id: 5, name: 'CI', status: 'completed', conclusion: 'failure', html_url: 'https://gh/run/5' }] });
+    if (url.includes('/actions/runs/5/jobs')) return json({ jobs: [{ id: 9, name: 'build', conclusion: 'failure', steps: [{ name: 'npm ci', conclusion: 'success' }, { name: 'npm run check', conclusion: 'failure' }] }] });
+    if (url.includes('/actions/jobs/9/logs')) return json('2026-11-22T03:00:00.0000000Z ##[group]Run npm run check\n2026-11-22T03:00:01.0000000Z \x1b[31merror\x1b[0m src/Hero.astro:4 Type error sekret-token\n');
+    if (url.includes('/check-runs')) return json({ check_runs: [{ name: 'Cloudflare Pages', app: { slug: 'cloudflare-workers-and-pages' }, status: 'completed', conclusion: 'success', details_url: 'https://cf/x' }, { name: 'build', app: { slug: 'github-actions' } }] });
+    if (url.includes('/status')) return json({ statuses: [] });
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  const ctx = { config: CONFIG, token: 'sekret-token', gitRoot: '/nonexistent-git', workRoot: mkdtempSync(join(tmpdir(), 'repos-ck-')), fetchFn };
+  const r = await callTool('checks', { repo: 'site', branch: 'tara/new-hero' }, ctx);
+  const t = r.content[0].text;
+  assert.equal(r.isError, undefined, t);
+  assert.match(t, /- CI: failure https:\/\/gh\/run\/5/);
+  assert.match(t, /failed job "build", step "npm run check"/);
+  assert.match(t, /src\/Hero.astro:4 Type error \*\*\*/);
+  assert.doesNotMatch(t, /sekret-token|##\[group\]|\x1b/);
+  assert.match(t, /Cloudflare Pages \(cloudflare-workers-and-pages\): success https:\/\/cf\/x/);
+});
+
+test('checks: only tara/, main or the preview branch, and a 403 on Actions says what to fix', async () => {
+  const ctx = (fetchFn) => ({ config: CONFIG, token: 'tok-abc123', gitRoot: '/nonexistent-git', workRoot: mkdtempSync(join(tmpdir(), 'repos-ck-')), fetchFn });
+  assert.equal((await callTool('checks', { repo: 'site', branch: 'feature/x' }, ctx(async () => ({})))).isError, true);
+  const forbidden = async (url) => (url.includes('/commits/main') && !url.includes('check-runs') && !url.includes('/status')
+    ? { ok: true, status: 200, json: async () => ({ sha: 'c'.repeat(40) }) }
+    : { ok: false, status: 403, json: async () => ({}) });
+  const r = await callTool('checks', { repo: 'site', branch: 'main' }, ctx(forbidden));
+  assert.match(r.content[0].text, /Actions: read/);
+});
+
+test('checks: waits while a run is still going, then reports it', async () => {
+  let polls = 0;
+  const fetchFn = async (url) => {
+    const json = (body) => ({ ok: true, status: 200, json: async () => body });
+    if (url.includes('/actions/runs?head_sha=')) {
+      polls += 1;
+      return json({ workflow_runs: [{ id: 1, name: 'CI', status: polls < 3 ? 'in_progress' : 'completed', conclusion: polls < 3 ? null : 'success', html_url: 'u' }] });
+    }
+    if (url.includes('/commits/')) return json(url.includes('check-runs') ? { check_runs: [] } : url.includes('/status') ? { statuses: [] } : { sha: 'd'.repeat(40) });
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  const ctx = { config: CONFIG, token: 'tok-abc123', gitRoot: '/nonexistent-git', workRoot: mkdtempSync(join(tmpdir(), 'repos-ck-')), fetchFn, sleep: async () => {} };
+  const r = await callTool('checks', { repo: 'site', branch: 'main', wait: 120 }, ctx);
+  assert.equal(polls, 3);
+  assert.match(r.content[0].text, /- CI: success/);
+});
+
+test('logTail keeps the last lines and drops timestamps', () => {
+  const raw = Array.from({ length: 100 }, (_, i) => `2026-11-22T03:00:00.0000000Z line ${i}`).join('\n');
+  const t = logTail(raw, 3);
+  assert.equal(t, 'line 97\nline 98\nline 99');
+});
