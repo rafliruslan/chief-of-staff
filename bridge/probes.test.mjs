@@ -122,3 +122,9 @@ test('gmail-new: the newest unread time per account is the fingerprint', async (
   const signedOut = async () => `@@PROBE@@${JSON.stringify({ state: 'ok', newest: { 0: 'http 401', 2: 0 } })}`;
   assert.equal((await runProbe(p, { repl: signedOut })).fingerprint, undefined, 'an unreadable feed never matches, so it runs');
 });
+
+test('the roll counts the last firing of the window when the tick runs a few seconds late', () => {
+  const r = rollProbe(ROLL, { text: file('', '- 2026-11-20 09:00: 0b: scored 3'), now: at('2026-11-20T11:00:07'), firesAt: halfHourly, random: () => 0.6 });
+  assert.equal(r.open, false);
+  assert.match(r.reason, /1 in 2/);
+});

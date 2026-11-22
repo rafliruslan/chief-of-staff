@@ -99,9 +99,13 @@ export function rollProbe(probe, { text, now = new Date(), firesAt, random = Mat
     return { open: false, reason: `${w.name} already posted today` };
   }
   let left = 0;
+  // From the start of this minute: the runner ticks a few seconds past it, and
+  // counting from 11:00:05 used to stop short of an 11:30:00 firing.
+  const start = new Date(now);
+  start.setSeconds(0, 0);
   const end = new Date(now);
   end.setHours(Math.floor(w.to / 100), w.to % 100, 0, 0);
-  for (let d = new Date(now); d <= end; d = new Date(d.getTime() + 60_000)) if (firesAt(d)) left += 1;
+  for (let d = start; d <= end; d = new Date(d.getTime() + 60_000)) if (firesAt(d)) left += 1;
   left = Math.max(left, 1);
   return random() < 1 / left
     ? { open: true, reason: `roll passed (1 in ${left}) for ${w.name}` }
