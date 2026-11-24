@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseProbe, unreplied, inboxRows, decide, runProbe, readSentinel, fingerprint } from './probes.mjs';
+import { parseProbe, unreplied, inboxRows, decide, runProbe, readSentinel, fingerprint, WA_LIST_JS } from './probes.mjs';
 
 test('a probe line parses, and an unknown one does not', () => {
   const p = parseProbe('slack-unreplied C0B1 since=1794979800 match=Order #\\d+ paid');
@@ -127,4 +127,38 @@ test('the roll counts the last firing of the window when the tick runs a few sec
   const r = rollProbe(ROLL, { text: file('', '- 2026-11-20 09:00: 0b: scored 3'), now: at('2026-11-20T11:00:07'), firesAt: halfHourly, random: () => 0.6 });
   assert.equal(r.open, false);
   assert.match(r.reason, /1 in 2/);
+});
+
+/** Run the WhatsApp script with a fake browser. `tabs` maps a targetId to what that tab shows. */
+async function runWaList(tabs, opened = 'ok') {
+  const calls = { opened: 0, closed: 0, out: '' };
+  const tab = (shows) => ({
+    n: 0,
+    async evaluate() { return this.n++ === 0 ? shows : [{ title: 'Ana', unread: 1 }]; },
+  });
+  const AsyncFunction = (async () => {}).constructor;
+  const run = new AsyncFunction('listBrowserTabs', 'attachBrowserTab', 'openTab', 'closeTab', 'setTimeout', 'console', WA_LIST_JS);
+  await run(
+    async () => Object.keys(tabs).map((targetId) => ({ targetId, url: 'https://web.whatsapp.com/' })),
+    async (id) => tab(tabs[id]),
+    async () => { calls.opened += 1; return tab(opened); },
+    async () => { calls.closed += 1; },
+    (fn) => fn(),
+    { log: (x) => { calls.out += x; } },
+  );
+  return { ...calls, state: readSentinel(calls.out).state };
+}
+
+test('the WhatsApp probe reads an open chat list in place, so it never takes the session', async () => {
+  const r = await runWaList({ A: 'ok' });
+  assert.deepEqual([r.state, r.opened, r.closed], ['ok', 0, 0]);
+});
+
+test('with no usable WhatsApp tab the probe opens its own and closes it', async () => {
+  const none = await runWaList({});
+  assert.deepEqual([none.state, none.opened, none.closed], ['ok', 1, 1]);
+  const stale = await runWaList({ A: 'busy' });
+  assert.deepEqual([stale.state, stale.opened, stale.closed], ['ok', 1, 1]);
+  const qr = await runWaList({}, 'qr');
+  assert.deepEqual([qr.state, qr.closed], ['qr', 1]);
 });

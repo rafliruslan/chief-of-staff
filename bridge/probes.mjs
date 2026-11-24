@@ -156,22 +156,37 @@ export function decide(result, last, now = Date.now(), retryMin = DEFAULT_RETRY_
 
 const SENTINEL = '@@PROBE@@';
 
-/** One `aside repl` script: open WhatsApp Web, read the chat list, print it. Clicks nothing. */
+/**
+ * One `aside repl` script: read the WhatsApp chat list and print it. Clicks nothing.
+ * WhatsApp Web works in one tab at a time, and a new tab takes the session from
+ * the old one. So a tab that already shows the list is read where it is; only
+ * when there is none does this open its own, and it closes that one.
+ */
 export const WA_LIST_JS = `
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const page = await openTab('https://web.whatsapp.com/');
+const look = (p) => p.evaluate(() => {
+  if (document.querySelector('#pane-side [role="row"]')) return 'ok';
+  const t = document.body ? document.body.innerText : '';
+  if (/use here/i.test(t) && /another window/i.test(t)) return 'busy';
+  if (document.querySelector('canvas[aria-label*="QR" i], [data-ref]')) return 'qr';
+  return 'loading';
+});
+let page = null;
+let own = false;
 let state = 'loading';
-const deadline = Date.now() + 60000;
-while (Date.now() < deadline) {
-  state = await page.evaluate(() => {
-    if (document.querySelector('#pane-side [role="row"]')) return 'ok';
-    const t = document.body ? document.body.innerText : '';
-    if (/use here/i.test(t) && /another window/i.test(t)) return 'busy';
-    if (document.querySelector('canvas[aria-label*="QR" i], [data-ref]')) return 'qr';
-    return 'loading';
-  });
-  if (state !== 'loading') break;
-  await sleep(1000);
+for (const t of (await listBrowserTabs()).filter((x) => /^https:\\/\\/web\\.whatsapp\\.com/.test(x.url || ''))) {
+  const p = await attachBrowserTab(t.targetId).catch(() => null);
+  if (p && (await look(p).catch(() => 'loading')) === 'ok') { page = p; state = 'ok'; break; }
+}
+if (!page) {
+  page = await openTab('https://web.whatsapp.com/');
+  own = true;
+  const deadline = Date.now() + 60000;
+  while (Date.now() < deadline) {
+    state = await look(page);
+    if (state !== 'loading') break;
+    await sleep(1000);
+  }
 }
 let rows = [];
 if (state === 'ok') {
@@ -192,6 +207,7 @@ if (state === 'ok') {
     };
   }));
 }
+if (own) try { await closeTab(page); } catch {}
 console.log(${JSON.stringify(SENTINEL)} + JSON.stringify({ state, rows }));
 `;
 
