@@ -130,7 +130,7 @@ test('the roll counts the last firing of the window when the tick runs a few sec
 });
 
 /** Run the WhatsApp script with a fake browser. `tabs` maps a targetId to what that tab shows. */
-async function runWaList(tabs, opened = 'ok') {
+async function runWaList(tabs, opened = 'ok', url = 'https://web.whatsapp.com/') {
   const calls = { opened: 0, closed: 0, out: '' };
   const tab = (shows) => ({
     n: 0,
@@ -139,7 +139,7 @@ async function runWaList(tabs, opened = 'ok') {
   const AsyncFunction = (async () => {}).constructor;
   const run = new AsyncFunction('listBrowserTabs', 'attachBrowserTab', 'openTab', 'closeTab', 'setTimeout', 'console', WA_LIST_JS);
   await run(
-    async () => Object.keys(tabs).map((targetId) => ({ targetId, url: 'https://web.whatsapp.com/' })),
+    async () => Object.keys(tabs).map((targetId) => ({ targetId, url })),
     async (id) => tab(tabs[id]),
     async () => { calls.opened += 1; return tab(opened); },
     async () => { calls.closed += 1; },
@@ -161,4 +161,11 @@ test('with no usable WhatsApp tab the probe opens its own and closes it', async 
   assert.deepEqual([stale.state, stale.opened, stale.closed], ['ok', 1, 1]);
   const qr = await runWaList({}, 'qr');
   assert.deepEqual([qr.state, qr.closed], ['qr', 1]);
+});
+
+test('a tab on a lookalike host is never read', async () => {
+  for (const url of ['https://web.whatsapp.com.example.net/', 'https://web.whatsapp.com@example.net/', 'http://web.whatsapp.com/', '']) {
+    const r = await runWaList({ A: 'ok' }, 'qr', url);
+    assert.deepEqual([r.state, r.opened], ['qr', 1], url);
+  }
 });

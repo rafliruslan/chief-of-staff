@@ -164,17 +164,20 @@ const SENTINEL = '@@PROBE@@';
  */
 export const WA_LIST_JS = `
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const look = (p) => p.evaluate(() => {
+const WA = 'https://web.whatsapp.com';
+const isWa = (u) => { try { return new URL(u).origin === WA; } catch { return false; } };
+const look = (p) => p.evaluate((wa) => {
+  if (location.origin !== wa) return 'loading';
   if (document.querySelector('#pane-side [role="row"]')) return 'ok';
   const t = document.body ? document.body.innerText : '';
   if (/use here/i.test(t) && /another window/i.test(t)) return 'busy';
   if (document.querySelector('canvas[aria-label*="QR" i], [data-ref]')) return 'qr';
   return 'loading';
-});
+}, WA);
 let page = null;
 let own = false;
 let state = 'loading';
-for (const t of (await listBrowserTabs()).filter((x) => /^https:\\/\\/web\\.whatsapp\\.com/.test(x.url || ''))) {
+for (const t of (await listBrowserTabs()).filter((x) => isWa(x.url))) {
   const p = await attachBrowserTab(t.targetId).catch(() => null);
   if (p && (await look(p).catch(() => 'loading')) === 'ok') { page = p; state = 'ok'; break; }
 }
@@ -191,7 +194,7 @@ if (!page) {
 let rows = [];
 if (state === 'ok') {
   await sleep(1500);
-  rows = await page.evaluate(() => [...document.querySelectorAll('#pane-side [role="row"]')].slice(0, 15).map((r) => {
+  rows = await page.evaluate((wa) => location.origin !== wa ? null : [...document.querySelectorAll('#pane-side [role="row"]')].slice(0, 15).map((r) => {
     const titles = [...r.querySelectorAll('span[title]')].map((s) => s.getAttribute('title'));
     const labels = [...r.querySelectorAll('[aria-label]')].map((e) => e.getAttribute('aria-label') || '');
     const unread = labels.find((a) => /unread message/i.test(a)) || '';
@@ -205,7 +208,8 @@ if (state === 'ok') {
       unread: n ? Number(n) : 0,
       tagged: labels.includes('@ message'),
     };
-  }));
+  }), WA);
+  if (!rows) { rows = []; state = 'moved'; }
 }
 if (own) try { await closeTab(page); } catch {}
 console.log(${JSON.stringify(SENTINEL)} + JSON.stringify({ state, rows }));
